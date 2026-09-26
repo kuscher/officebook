@@ -1,0 +1,6 @@
+# The app's version is Collabora's own (AC_INIT in UPSTREAM's configure.ac;
+# CI checks they match) plus OfficeBook's build number, which goes up with
+# every APK you share. It becomes versionName 26.04.3.1 and versionCode 1.
+COLLABORA_VERSION=26.04.3.1
+VERSION_CODE=1
+VERSION_NAME=$COLLABORA_VERSION-$VERSION_CODE

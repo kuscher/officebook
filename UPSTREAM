@@ -1,0 +1,6 @@
+# Collabora Online's monorepo (the online code, the browser UI and, under
+# engine/, the LibreOffice-based core) at a commit of its mobile release
+# branch, which the Play and App Store apps are built from.
+ONLINE_REPO=https://github.com/CollaboraOnline/online.mirror.git
+ONLINE_BRANCH=distro/collabora/co-26.04-mobile
+ONLINE_COMMIT=794af0088b0369878461cc53de45129eaf08824a

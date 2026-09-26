@@ -1,0 +1,255 @@
+# Builds the OfficeBook APK: Collabora Office's Android app from the
+# Collabora Online monorepo at the commit in UPSTREAM, with patches/ applied,
+# for arm64-v8a, the way android/README.md builds it. The engine
+# (LibreOffice-based core) needs the NDK's x86_64 toolchain, which is why this
+# runs here and not on the Googlebook.
+#
+# Two layers, cached separately (actions/cache, not artifacts):
+# - The engine: hours on a runner. Its outputs are cached under a key made of
+#   UPSTREAM, engine.conf and any patch that touches engine/, so changes to
+#   the app (Java, the web UI, online's C++) reuse them. A cold build may not
+#   fit in one job: ccache is saved even when make runs out of time, and the
+#   next run (./ob ci) picks up where it stopped.
+# - The app: online's configure and make (web UI, config) and Gradle, which
+#   compiles online's C++ against the engine and packages the APK.
+#
+# The APK is unsigned; ./ob fetch downloads and signs it with keystore.jks.
+name: APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - UPSTREAM
+      - VERSION
+      - engine.conf
+      - patches/**
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: 29.0.14206865
+  W: /mnt/w
+  CCACHE_DIR: /mnt/w/ccache
+  CCACHE_MAXSIZE: 6G
+  CCACHE_COMPRESS: "true"
+
+jobs:
+  apk:
+    name: OfficeBook APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: Check out OfficeBook
+        uses: actions/checkout@v7
+        with:
+          path: officebook
+
+      - name: Runner
+        run: |
+          nproc; free -h
+          # /mnt is the runner's second disk, with more room than /.
+          sudo mkdir -p "$W" && sudo chown "$USER" "$W"
+          df -h / /mnt
+
+      - name: Free up disk space
+        run: |
+          sudo apt-get autoremove -y >/dev/null && sudo apt-get clean
+          sudo rm -rf /home/packer /opt/az /opt/google /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy /opt/microsoft /opt/pipx \
+            /usr/lib/google-cloud-sdk /usr/local/julia* /usr/local/share/powershell \
+            /usr/share/dotnet /usr/share/swift /usr/local/share/vcpkg
+          df -h / /mnt
+
+      - name: Check out Collabora Online
+        run: |
+          . officebook/UPSTREAM
+          git init -q "$W/co"
+          cd "$W/co"
+          git remote add origin "$ONLINE_REPO"
+          git fetch -q --depth 1 origin "$ONLINE_COMMIT"
+          git checkout -q --detach FETCH_HEAD
+          git log -1 --format='%H %cd %s'
+          . "$GITHUB_WORKSPACE/officebook/VERSION"
+          grep -q "AC_INIT(\[coolwsd\], \[$COLLABORA_VERSION\]" configure.ac ||
+            { grep AC_INIT configure.ac; echo "::error::VERSION's COLLABORA_VERSION does not match configure.ac"; exit 1; }
+
+      - name: Apply patches
+        working-directory: ${{ env.W }}/co
+        run: git -c user.name=OfficeBook -c user.email=ci@invalid am "$GITHUB_WORKSPACE"/officebook/patches/*.patch
+
+      - name: Engine cache key
+        id: key
+        run: |
+          # Only patches that change engine/ invalidate the engine.
+          engine_patches=$(grep -l '^diff --git a/engine/' officebook/patches/*.patch || true)
+          key=$(cat officebook/UPSTREAM officebook/engine.conf $engine_patches | sha256sum | cut -c1-16)
+          echo "engine=engine-$NDK_VERSION-$key" >> "$GITHUB_OUTPUT"
+          echo "tarballs=tarballs-$(sha256sum "$W/co/engine/download.lst" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "engine key: engine-$NDK_VERSION-$key (patches: ${engine_patches:-none})"
+
+      - name: Restore the engine
+        id: engine
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.W }}/engine-out.tar.zst
+          key: ${{ steps.key.outputs.engine }}
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            autoconf automake bison ccache flex gperf libtool make meson nasm ninja-build \
+            pkg-config python3-lxml python3-polib uuid-dev xsltproc libxml2-utils zip unzip zstd
+          ccache --version | head -1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;$NDK_VERSION" "cmake;3.22.1" "build-tools;37.0.0" >/dev/null
+          ls "$ANDROID_HOME/ndk"
+
+      # --- The engine, unless cached ---
+
+      - name: Restore ccache
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.NDK_VERSION }}-${{ github.run_id }}
+          restore-keys: ccache-${{ env.NDK_VERSION }}-
+
+      - name: Restore downloaded tarballs
+        id: tarballs
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.W }}/co/engine/external/tarballs
+          key: ${{ steps.key.outputs.tarballs }}
+          restore-keys: tarballs-
+
+      - name: Configure the engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        working-directory: ${{ env.W }}/co/engine
+        run: |
+          sed -e "s|@NDK@|$ANDROID_HOME/ndk/$NDK_VERSION|" -e "s|@SDK@|$ANDROID_HOME|" \
+              -e "s|@JOBS@|$(nproc)|" "$GITHUB_WORKSPACE/officebook/engine.conf" |
+            grep -v -e '^#' -e '^$' > autogen.input
+          cat autogen.input
+          ccache -z >/dev/null
+          ./autogen.sh
+
+      - name: Build the engine
+        id: make
+        if: steps.engine.outputs.cache-hit != 'true'
+        working-directory: ${{ env.W }}/co/engine
+        # Leaves time to save ccache when a cold build doesn't fit in one job.
+        timeout-minutes: 270
+        run: make
+
+      - name: Save downloaded tarballs
+        if: always() && steps.engine.outputs.cache-hit != 'true' && steps.tarballs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.W }}/co/engine/external/tarballs
+          key: ${{ steps.key.outputs.tarballs }}
+
+      - name: ccache statistics
+        if: always() && steps.engine.outputs.cache-hit != 'true'
+        run: ccache -s || true
+
+      - name: Save ccache
+        if: always() && steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.NDK_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Pack the engine's outputs
+        if: steps.engine.outputs.cache-hit != 'true'
+        working-directory: ${{ env.W }}/co/engine
+        # What online's configure, its CMake build and Gradle read from the
+        # engine (configure.ac, android/lib/src/main/cpp/CMakeLists.txt.in,
+        # android/lib/build.gradle); the rest is in the source tree already.
+        run: |
+          tar -cf - config_host.mk config_host_lang.mk config_host instdir android/jniLibs \
+              android/default-document workdir/LinkTarget/StaticLibrary \
+              workdir/UnpackedTarball/poco workdir/UnpackedTarball/zstd workdir/UnpackedTarball/libpng |
+            zstd -T0 -10 -q -o "$W/engine-out.tar.zst"
+          ls -la "$W/engine-out.tar.zst"
+
+      - name: Save the engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.W }}/engine-out.tar.zst
+          key: ${{ steps.key.outputs.engine }}
+
+      - name: Unpack the cached engine
+        if: steps.engine.outputs.cache-hit == 'true'
+        working-directory: ${{ env.W }}/co/engine
+        run: zstd -dc "$W/engine-out.tar.zst" | tar -xf - && ls android/jniLibs/*
+
+      # --- The app ---
+
+      - name: Configure the app
+        working-directory: ${{ env.W }}/co
+        run: |
+          . "$GITHUB_WORKSPACE/officebook/VERSION"
+          ./autogen.sh
+          ./configure --enable-androidapp --with-android-abi=arm64-v8a \
+            --with-lo-builddir="$W/co/engine" \
+            --with-app-name=OfficeBook --with-app-package-name=local.officebook \
+            --with-vendor=OfficeBook --with-info-url=https://github.com/kuscher/officebook \
+            --with-android-package-versioncode="$COLLABORA_VERSION-$VERSION_CODE"
+
+      - name: Build the app's web UI and config
+        working-directory: ${{ env.W }}/co
+        run: make -j"$(nproc)"
+
+      - name: Build the APK
+        working-directory: ${{ env.W }}/co/android
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Collect the APK
+        run: |
+          . officebook/VERSION
+          find "$W/co/android" -name '*.apk' -path '*release*' -exec ls -la {} +
+          apk=$(find "$W/co/android" -name '*arm64-v8a-release*.apk' | head -1)
+          out=OfficeBook-$VERSION_NAME-unsigned.apk
+          cp "$apk" "$out"
+          python3 - "$out" <<'PY'
+          import collections, sys, zipfile
+          size = collections.Counter()
+          for i in zipfile.ZipFile(sys.argv[1]).infolist():
+              parts = i.filename.split("/")
+              size["/".join(parts[:2]) if parts[0] in ("assets", "lib") else parts[0]] += i.compress_size
+          for name, n in size.most_common(12):
+              print(f"{n / 1e6:8.1f} MB  {name}")
+          PY
+          echo "APK=$out" >> "$GITHUB_ENV"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.APK }}
+          archive: "false"
+          if-no-files-found: error
+          retention-days: 14

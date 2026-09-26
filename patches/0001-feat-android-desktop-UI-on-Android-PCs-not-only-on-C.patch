@@ -1,0 +1,99 @@
+From 1c6b789eced0b674eb4292b6f1a5a8de9d97b58d Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 21:37:45 +0000
+Subject: [PATCH 1/2] feat(android): desktop UI on Android PCs, not only on
+ ChromeOS
+
+Android's own desktop mode (a Googlebook, FEATURE_PC) is a laptop with a
+keyboard and a mouse like ChromeOS, but the app gave it the tablet
+notebookbar because isChromeOS() only knows ChromeOS's ARC feature. Add
+isDesktop() (ChromeOS or FEATURE_PC) for the UI choices: the uiMode and
+URL passed to COOLWSD, the isChromeOS() JavaScript interface the web UI
+reads for isDesktop()/isTablet(), and the start screen's button layout.
+The file picker's ChromeOS-only MIME workaround keeps isChromeOS().
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../androidapp/ui/LibreOfficeUIActivity.java  |  4 ++--
+ .../libreoffice/androidlib/LOActivity.java    | 19 ++++++++++++++-----
+ 2 files changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java b/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
+index d009675bd..ecf92029c 100644
+--- a/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
++++ b/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
+@@ -393,7 +393,7 @@ public class LibreOfficeUIActivity extends AppCompatActivity implements Settings
+     /** Initialize the FloatingActionButton. */
+     private void setupFloatingActionButton() {
+         editFAB = findViewById(R.id.editFAB);
+-        if (LOActivity.isChromeOS(this)) {
++        if (LOActivity.isDesktop(this)) {
+             int dp = (int) getResources().getDisplayMetrics().density;
+             ConstraintLayout.LayoutParams layoutParams = (ConstraintLayout.LayoutParams) editFAB.getLayoutParams();
+             layoutParams.leftToLeft = ConstraintLayout.LayoutParams.PARENT_ID;
+@@ -409,7 +409,7 @@ public class LibreOfficeUIActivity extends AppCompatActivity implements Settings
+                 mlp.leftMargin = insets.left;
+                 mlp.rightMargin = insets.right;
+                 int dp = (int) getResources().getDisplayMetrics().density;
+-                mlp.bottomMargin = insets.bottom + (LOActivity.isChromeOS(this) ? dp * 24 : 0);
++                mlp.bottomMargin = insets.bottom + (LOActivity.isDesktop(this) ? dp * 24 : 0);
+                 v.setLayoutParams(mlp);
+ 
+                 return WindowInsets.CONSUMED;
+diff --git a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+index bd007f218..a5b7765ba 100644
+--- a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
++++ b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+@@ -269,6 +269,15 @@ public class LOActivity extends AppCompatActivity {
+         return context.getPackageManager().hasSystemFeature("org.chromium.arc.device_management");
+     }
+ 
++    /**
++     * A laptop or desktop: ChromeOS, or Android itself on a PC (FEATURE_PC,
++     * e.g. Android's desktop mode on a Googlebook). These get the desktop UI
++     * with classic menus instead of the tablet notebookbar.
++     */
++    public static boolean isDesktop(Context context) {
++        return isChromeOS(context) || context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_PC);
++    }
++
+     /** True if a physical keyboard with letter keys is attached and can be typed on right now. */
+     private static boolean detectHardwareKeyboard(Context context) {
+         Configuration configuration = context.getResources().getConfiguration();
+@@ -1262,7 +1271,7 @@ public class LOActivity extends AppCompatActivity {
+         String cacheDir = getApplication().getCacheDir().getAbsolutePath();
+         String apkFile = getApplication().getPackageResourcePath();
+         AssetManager assetManager = getResources().getAssets();
+-        String uiMode = (isLargeScreen() && !isChromeOS()) ? "notebookbar" : "classic";
++        String uiMode = (isLargeScreen() && !isDesktop(this)) ? "notebookbar" : "classic";
+         String userName = getPrefs().getString(USER_NAME_KEY, "Guest User");
+         createCOOLWSD(dataDir, cacheDir, apkFile, assetManager, urlToLoad, uiMode, userName);
+ 
+@@ -1287,7 +1296,7 @@ public class LOActivity extends AppCompatActivity {
+             finalUrlToLoad += "&debug=true";
+         }
+ 
+-        if (isLargeScreen() && !isChromeOS())
++        if (isLargeScreen() && !isDesktop(this))
+             finalUrlToLoad += "&userinterfacemode=notebookbar";
+ 
+         mDarkModeApplied = isDarkMode();
+@@ -1377,12 +1386,12 @@ public class LOActivity extends AppCompatActivity {
+     }
+ 
+     /**
+-     * Provide the info that this app is actually running under ChromeOS - so
+-     * has to mostly look like on desktop.
++     * Provide the info that this app is actually running under ChromeOS, or
++     * on another Android PC - so has to mostly look like on desktop.
+      */
+     @JavascriptInterface
+     public boolean isChromeOS() {
+-        return isChromeOS(this);
++        return isDesktop(this);
+     }
+ 
+     /**
+-- 
+2.47.3
+

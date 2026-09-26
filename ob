@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Helper for OfficeBook: build the APK in GitHub Actions, sign it here, test
+# it on the Googlebook over adb (Wireless debugging, set up by VSCodeBook's
+# `vscodebook android`).
+#
+#   ./ob ci                   start a build of main in Actions (hours when the
+#                             engine isn't cached; run it again if a cold build
+#                             times out, ccache carries on)
+#   ./ob wait [RUN]           follow the latest (or RUN's) build until it ends
+#   ./ob fetch [RUN]          download the latest successful build's APK and
+#                             sign it: build/OfficeBook.apk and
+#                             executables/OfficeBook-<version>.apk
+#   ./ob install | start | stop | logs [N] | crash
+#   ./ob open FILE            copy FILE to the Googlebook's Download folder and
+#                             open it in OfficeBook
+#   ./ob share                executables/OfficeBook-<version>.apk to the
+#                             Googlebook's Download folder
+#   ./ob live-resize [on|off|status]
+#                             resize the window live instead of under a veil
+#                             (Android's per-app ENABLE_FLUID_RESIZING switch)
+#   ./ob shot [FILE] [full]   screenshot the app window (or the full screen)
+#
+# adb's server listens on a Unix socket, not tcp:5037: the Terminal forwards
+# every TCP port in the VM to Android, where any app could use it.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+REPO=kuscher/officebook
+PKG=local.officebook
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/vscodebook
+SERIAL=${ADB_SERIAL:-$(cat "$CONF/adb-serial" 2>/dev/null || echo none)}
+mkdir -p "$HOME/.local/state/vscodebook"
+export ADB_SERVER_SOCKET=${ADB_SERVER_SOCKET:-localfilesystem:$HOME/.local/state/vscodebook/adb.sock}
+A=(adb -s "$SERIAL")
+. ./VERSION
+
+adb_up() { # connects on demand, finding Wireless debugging's port if it changed
+  "${A[@]}" get-state >/dev/null 2>&1 && return
+  vscodebook android connect >/dev/null || exit 1
+  SERIAL=$(cat "$CONF/adb-serial"); A=(adb -s "$SERIAL")
+}
+
+latest_run() { # the newest run of the APK workflow, optionally successful only
+  gh run list -R $REPO --workflow build.yml --limit 1 ${1:+--status "$1"} \
+    --json databaseId -q '.[0].databaseId'
+}
+
+fetch() {
+  local run=${1:-$(latest_run success)}
+  [[ -n $run ]] || { echo "no successful build yet (./ob ci)"; exit 1; }
+  local id name
+  read -r id name < <(gh api "repos/$REPO/actions/runs/$run/artifacts" \
+    -q '.artifacts[] | select(.name | endswith("-unsigned.apk")) | "\(.id) \(.name)"' | head -1)
+  [[ -n ${id:-} ]] || { echo "run $run has no APK (expired after 14 days?)"; exit 1; }
+  mkdir -p build executables
+  echo "downloading $name from run $run"
+  # The artifact is the bare APK (upload-artifact archive: false); gh run
+  # download expects a zip, the REST endpoint hands over the file.
+  gh api "repos/$REPO/actions/artifacts/$id/zip" > build/unsigned.apk
+  zipalign -c 4 build/unsigned.apk >/dev/null || { zipalign -f 4 build/unsigned.apk build/aligned.apk; mv build/aligned.apk build/unsigned.apk; }
+  # The key and its password stay on this machine (not in git); a copy is
+  # in ~/.config/officebook. Updates must be signed with the same key.
+  [[ -f keystore.jks && -f keystore.pass ]] || cp ~/.config/officebook/keystore.{jks,pass} . ||
+    { echo "no keystore.jks/keystore.pass"; exit 1; }
+  apksigner sign --ks keystore.jks --ks-pass file:keystore.pass --key-pass file:keystore.pass \
+    --out build/OfficeBook.apk build/unsigned.apk
+  apksigner verify build/OfficeBook.apk
+  rm -f build/OfficeBook.apk.idsig
+  cp build/OfficeBook.apk "executables/OfficeBook-$VERSION_NAME.apk"
+  ls -la "executables/OfficeBook-$VERSION_NAME.apk"
+}
+
+install() {
+  # Play Protect would stop an adb install to scan it; skip that, then restore.
+  "${A[@]}" shell settings put global verifier_verify_adb_installs 0
+  "${A[@]}" install -r build/OfficeBook.apk || { "${A[@]}" shell settings put global verifier_verify_adb_installs 1; exit 1; }
+  "${A[@]}" shell settings put global verifier_verify_adb_installs 1
+}
+
+put_media() { # COLLECTION FOLDER MIME FILE: a file into the current Android user's shared storage
+  local collection=$1 folder=$2 mime=$3 file=$4 name user tmp id where
+  name=$(basename "$file")
+  user=$("${A[@]}" shell am get-current-user | tr -d '\r')
+  tmp="/data/local/tmp/ob-$$"
+  where="\"_display_name='${name//\'/\'\'}' AND relative_path='$folder/'\""
+  "${A[@]}" push "$file" "$tmp" >/dev/null
+  "${A[@]}" shell content delete --user "$user" --uri "$collection" --where "$where" >/dev/null 2>&1 || true
+  "${A[@]}" shell content insert --user "$user" --uri "$collection" \
+    --bind _display_name:s:"'$name'" --bind mime_type:s:"$mime" --bind relative_path:s:"'$folder/'"
+  id=$("${A[@]}" shell content query --user "$user" --uri "$collection" --projection _id \
+    --where "$where" | grep -o '_id=[0-9]*' | tail -1 | cut -d= -f2)
+  [[ -n $id ]] || { echo "could not create $folder/$name"; exit 1; }
+  "${A[@]}" shell "content write --user $user --uri $collection/$id < $tmp"
+  "${A[@]}" shell rm -f "$tmp"
+  MEDIA_URI=$collection/$id
+  echo "$folder/$name"
+}
+
+share() {
+  local apk=executables/OfficeBook-$VERSION_NAME.apk
+  [[ -f $apk ]] || { echo "no $apk (./ob fetch)"; exit 1; }
+  put_media content://media/external/downloads Download application/vnd.android.package-archive "$apk"
+}
+
+case ${1:-} in
+  ci) gh workflow run build.yml -R $REPO --ref main; sleep 5; echo "run $(latest_run)" ;;
+  wait) gh run watch -R $REPO "${2:-$(latest_run)}" --interval 120 --exit-status ;;
+  fetch) fetch "${2:-}" ;;
+  install) adb_up; install ;;
+  start) adb_up; "${A[@]}" shell am start --user current -n $PKG/org.libreoffice.androidapp.ui.LibreOfficeUIActivity >/dev/null ;;
+  stop) adb_up; "${A[@]}" shell am force-stop --user current $PKG ;;
+  open)
+    adb_up
+    f=${2:?usage: ./ob open FILE}
+    case $f in
+      *.odt) mime=application/vnd.oasis.opendocument.text ;;
+      *.ods) mime=application/vnd.oasis.opendocument.spreadsheet ;;
+      *.odp) mime=application/vnd.oasis.opendocument.presentation ;;
+      *.docx) mime=application/vnd.openxmlformats-officedocument.wordprocessingml.document ;;
+      *.xlsx) mime=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet ;;
+      *.pptx) mime=application/vnd.openxmlformats-officedocument.presentationml.presentation ;;
+      *) mime=application/octet-stream ;;
+    esac
+    put_media content://media/external/downloads Download "$mime" "$f"
+    "${A[@]}" shell am start --user current -a android.intent.action.VIEW -t "$mime" \
+      -d "$MEDIA_URI" --grant-read-uri-permission --grant-write-uri-permission \
+      -n $PKG/org.libreoffice.androidlib.LOActivity >/dev/null ;;
+  logs)
+    adb_up
+    pid=$("${A[@]}" shell pidof $PKG | tr -d '\r' || true)
+    if [[ -n $pid ]]; then "${A[@]}" logcat -d --pid "$pid" | tail -"${2:-80}"
+    else "${A[@]}" logcat -d -s LOActivity:* LibreOfficeUIActivity:* AndroidRuntime:E | tail -"${2:-80}"; fi ;;
+  crash) adb_up; "${A[@]}" logcat -d -b crash | tail -"${2:-60}" ;;
+  share) adb_up; share ;;
+  live-resize)
+    # Desktop windowing shows a veil (icon on a plain colour) while a window is
+    # resized, unless compat change ENABLE_FLUID_RESIZING is on for the app
+    # (checked in this Googlebook's SystemUI; see BentoBook's docs/DESIGN.md).
+    # It is @Overridable, so the shell may set it on a release build, and it
+    # survives app updates. It applies to windows opened afterwards.
+    adb_up
+    case ${2:-on} in
+      on) "${A[@]}" shell am compat enable ENABLE_FLUID_RESIZING $PKG ;;
+      off) "${A[@]}" shell am compat reset ENABLE_FLUID_RESIZING $PKG ;;
+      status)
+        "${A[@]}" shell dumpsys platform_compat | grep 'name=ENABLE_FLUID_RESIZING;' |
+          grep -q "[{ ]$PKG=true" && echo on || echo off ;;
+      *) echo "usage: ./ob live-resize [on|off|status]" >&2; exit 2 ;;
+    esac ;;
+  shot)
+    adb_up
+    out=${2:-/tmp/claude-$(id -u)/ob-shot.png}
+    "${A[@]}" exec-out screencap -p > "$out.full.png"
+    if [[ ${3:-} == full ]]; then
+      mv "$out.full.png" "$out"
+    else
+      # The app's largest window: menus and tooltips are windows too.
+      read -r x1 y1 x2 y2 < <("${A[@]}" shell dumpsys window windows |
+        awk -v pkg="$PKG" '/Window #/ { inpkg = index($0, pkg) > 0 } inpkg && /frame=\[/ { print }' |
+        grep -o 'frame=\[[0-9-]*,[0-9-]*\]\[[0-9]*,[0-9]*\]' | tr -c '0-9\n-' ' ' |
+        awk '{ a = ($3 - $1) * ($4 - $2); if (a > best) { best = a; line = $1 " " $2 " " $3 " " $4 } } END { print line }')
+      python3 tools/crop.py "$out.full.png" "$out" "$x1" "$y1" "$((x2 - x1))" "$((y2 - y1))"
+      rm -f "$out.full.png"
+    fi
+    echo "$out" ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

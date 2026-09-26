@@ -1,0 +1,7 @@
+build/
+executables/
+*.apk
+*.idsig
+# The signing key stays on this machine (a copy is in ~/.config/officebook).
+keystore.jks
+keystore.pass

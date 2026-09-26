@@ -1,0 +1,42 @@
+From e231785614dcef08546ae3bb8d01084bcfe56e79 Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 21:37:46 +0000
+Subject: [PATCH 2/2] fix(android): keep documents open when a desktop window
+ is resized
+
+In a freeform window (ChromeOS, Android's desktop mode) resizing crosses
+smallestScreenSize buckets, and moving the window to another display
+changes the density. Neither was in configChanges, so the system
+restarted the activity and the document reloaded. The web UI lays itself
+out again on the WebView's size change, as for screenSize.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ android/app/src/main/AndroidManifest.xml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 4f2fdbe24..62758c60f 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -31,7 +31,7 @@
+         <!-- Document Browser Activity -->
+         <activity
+             android:name=".ui.LibreOfficeUIActivity"
+-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
++            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboardHidden|uiMode"
+             android:exported="true">
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+@@ -49,7 +49,7 @@
+         <!-- The main document editing Activity -->
+         <activity
+             android:name="org.libreoffice.androidlib.LOActivity"
+-            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|uiMode"
++            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|uiMode"
+             android:launchMode="singleTask"
+             android:exported="true">
+             <intent-filter>
+-- 
+2.47.3
+
