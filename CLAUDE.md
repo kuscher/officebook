@@ -16,6 +16,7 @@ NDK's x86_64 toolchain. Read docs/DESIGN.md.
 ./ob revoke                   # all-files access off, test files out of Download/
 ./ob share                    # the APK to the Googlebook's Download folder
 ./ob live-resize [on|off|status]
+./ob devtools on|off; ./ob cdp targets | eval JS   # the app's WebView (new windows)
 ```
 
 adb comes from VSCodeBook's setup; its server runs on a Unix socket. Never

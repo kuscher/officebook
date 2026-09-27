@@ -1,0 +1,53 @@
+From 4a6d616e806361195712a7183de21bafc5a2a46a Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:26:29 +0000
+Subject: [PATCH 5/9] fix(browser): Android app on ChromeOS was never detected
+ as a Chromebook
+
+global.mode.isChromebook() returns a value computed in
+BrowserProperties.initiateBrowserProperties(), which runs from the
+InitializerBase constructor. AndroidAppInitializer only sets
+window.ThisIsTheAndroidApp after super() returns, so the check
+`ThisIsTheAndroidApp && COOLMessageHandler.isChromeOS()` always saw
+undefined and isChromebook() was false. The Android WebView defines
+window.orientation, so L.Browser.mobile is true and the app on a
+Chromebook took the tablet paths: isTablet() true, isDesktop() false,
+the floating edit button, touch-sized UI.
+
+Ask the app on first use instead, once ThisIsTheAndroidApp is known, and
+remember the answer; calls made earlier return false without caching.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ browser/js/global.js | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/browser/js/global.js b/browser/js/global.js
+index ae48ac566..16e9faa2b 100644
+--- a/browser/js/global.js
++++ b/browser/js/global.js
+@@ -81,7 +81,9 @@ class BrowserProperties {
+ 		let gecko3d = 'MozPerspective' in doc.style;
+ 
+ 		var mac = navigator.appVersion.indexOf('Mac') != -1 || navigator.userAgent.indexOf('Mac') != -1;
+-		var chromebook = global.ThisIsTheAndroidApp && global.COOLMessageHandler.isChromeOS();
++		// Decided on first use, not here: this runs from InitializerBase's
++		// constructor, before AndroidAppInitializer sets ThisIsTheAndroidApp.
++		var chromebook;
+ 
+ 		var navigatorLang = navigator.languages && navigator.languages.length ? navigator.languages[0] :
+ 		(navigator.language || navigator.userLanguage || navigator.browserLanguage || navigator.systemLanguage);
+@@ -176,7 +178,9 @@ class BrowserProperties {
+ 
+ 		global.mode = {
+ 			isChromebook: function() {
+-				return chromebook;
++				if (chromebook === undefined && global.ThisIsTheAndroidApp)
++					chromebook = !!global.COOLMessageHandler.isChromeOS();
++				return !!chromebook;
+ 			},
+ 			// This typically means a mobile phone. Has to match small screen size requirement.
+ 			isSmallScreenDevice: function() {
+-- 
+2.47.3
+

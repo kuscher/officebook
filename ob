@@ -20,6 +20,8 @@
 #                             resize the window live instead of under a veil
 #                             (Android's per-app ENABLE_FLUID_RESIZING switch)
 #   ./ob shot [FILE] [full]   screenshot the app window (or the full screen)
+#   ./ob devtools [on|off]    WebView debugging for windows opened afterwards
+#   ./ob cdp targets | eval JS    DevTools on the app's WebView (tools/cdp.py)
 #
 # adb's server listens on a Unix socket, not tcp:5037: the Terminal forwards
 # every TCP port in the VM to Android, where any app could use it.
@@ -163,6 +165,15 @@ case ${1:-} in
           grep -q "[{ ]$PKG=true" && echo on || echo off ;;
       *) echo "usage: ./ob live-resize [on|off|status]" >&2; exit 2 ;;
     esac ;;
+  devtools)
+    # A DUMP-guarded receiver (patches/0009), so only this shell can flip it.
+    adb_up
+    on=$([[ ${2:-on} == on ]] && echo true || echo false)
+    "${A[@]}" shell am broadcast -a local.officebook.DEBUG -p $PKG --ez devtools $on >/dev/null
+    echo "WebView debugging ${2:-on} for windows opened from now on" ;;
+  cdp)
+    shift; adb_up
+    ADB_SERIAL=$SERIAL CDP_PKG=$PKG CDP_SOCK=/tmp/claude-$(id -u)/ob-devtools.sock python3 tools/cdp.py "$@" ;;
   shot)
     adb_up
     out=${2:-/tmp/claude-$(id -u)/ob-shot.png}
@@ -179,5 +190,5 @@ case ${1:-} in
       rm -f "$out.full.png"
     fi
     echo "$out" ;;
-  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

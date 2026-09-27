@@ -1,0 +1,581 @@
+From de5ddfc22c9bcd570d0fd60640ebf8e60bf88ee0 Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:33:38 +0000
+Subject: [PATCH 7/9] feat(android): answer the desktop app's messages on a PC
+
+With the Android app counting as the desktop app on a PC, the web UI
+shows the backstage view (the File tab) and sends the messages Windows,
+macOS and Qt answer natively; COOLWSD answered them with "unknown
+command" errors, or nothing happened.
+
+- COOLMessageHandler.isCODesktop() (= isDesktop()) opts in, and
+  postMobileCall() answers GETRECENTDOCS with the recent documents in the
+  desktop app's JSON (uri, name, timestamp, plus displayUri and doctype).
+- uno .uno:Open picks a document (ACTION_OPEN_DOCUMENT), "opendoc" opens
+  a recent one, and "newdoc" creates one from a template in the web UI's
+  templates/ (or the blank one) where the user picks (CREATE_DOCUMENT);
+  the new document replaces the open one, as opening from the start
+  screen does. DesktopDocuments holds these for the start screen too.
+- uno .uno:SaveAs saves to a place the user picks and continues there
+  (the existing copy-with-TakeOwnership path).
+- TEXTCLIPBOARD copies text, SETDARKMODE remembers the theme,
+  FULLSCREENPRESENTATION hides the system bars during a slideshow, and
+  LICENSE shows the license. The desktop-only rest (WELCOME,
+  EXCHANGEMONITORS, settings sync, ...) is dropped.
+- The page always gets darkTheme=true|false: the web UI keeps the last
+  one it was given.
+
+Recent documents are kept without duplicates now.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../androidlib/DesktopDocuments.java          | 346 ++++++++++++++++++
+ .../libreoffice/androidlib/LOActivity.java    | 133 ++++++-
+ 2 files changed, 476 insertions(+), 3 deletions(-)
+ create mode 100644 android/lib/src/main/java/org/libreoffice/androidlib/DesktopDocuments.java
+
+diff --git a/android/lib/src/main/java/org/libreoffice/androidlib/DesktopDocuments.java b/android/lib/src/main/java/org/libreoffice/androidlib/DesktopDocuments.java
+new file mode 100644
+index 000000000..d709cfc44
+--- /dev/null
++++ b/android/lib/src/main/java/org/libreoffice/androidlib/DesktopDocuments.java
+@@ -0,0 +1,346 @@
++/* -*- tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++package org.libreoffice.androidlib;
++
++import android.app.Activity;
++import android.content.ComponentName;
++import android.content.ContentResolver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.database.Cursor;
++import android.net.Uri;
++import android.provider.DocumentsContract;
++import android.provider.OpenableColumns;
++import android.util.Log;
++import android.widget.Toast;
++
++import org.json.JSONArray;
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.net.URLDecoder;
++import java.text.SimpleDateFormat;
++import java.util.ArrayList;
++import java.util.Date;
++import java.util.List;
++import java.util.Locale;
++import java.util.TimeZone;
++
++/**
++ * The desktop app's document actions, for the Android app on a PC: the
++ * starter screen and the backstage view (File tab) ask for them with
++ * GETRECENTDOCS, "opendoc", "newdoc" and "uno .uno:Open", which the
++ * Windows, macOS and Qt apps answer natively.
++ *
++ * The activity using it calls pickDocument() or newDocument(), passes its
++ * activity results to onActivityResult(), and opens the Uri it returns.
++ */
++public class DesktopDocuments {
++    private static final String TAG = "DesktopDocuments";
++
++    public static final int REQUEST_OPEN = 610;
++    public static final int REQUEST_NEW = 611;
++
++    private static final int MAX_RECENT_DOCUMENTS = 30;
++    /** As many as the desktop app lists (common/RecentFiles.cpp). */
++    private static final int MAX_RECENT_SHOWN = 15;
++
++    /** What Open offers, as the start screen's picker does. */
++    private static final String[] OPEN_MIME_TYPES = {
++        "application/vnd.oasis.opendocument.text",
++        "application/vnd.oasis.opendocument.graphics",
++        "application/vnd.oasis.opendocument.presentation",
++        "application/vnd.oasis.opendocument.spreadsheet",
++        "application/vnd.oasis.opendocument.text-flat-xml",
++        "application/vnd.oasis.opendocument.graphics-flat-xml",
++        "application/vnd.oasis.opendocument.presentation-flat-xml",
++        "application/vnd.oasis.opendocument.spreadsheet-flat-xml",
++        "application/vnd.oasis.opendocument.text-template",
++        "application/vnd.oasis.opendocument.spreadsheet-template",
++        "application/vnd.oasis.opendocument.graphics-template",
++        "application/vnd.oasis.opendocument.presentation-template",
++        "application/rtf",
++        "text/rtf",
++        "application/msword",
++        "application/vnd.ms-powerpoint",
++        "application/vnd.ms-excel",
++        "application/vnd.visio",
++        "application/vnd.visio.xml",
++        "application/x-mspublisher",
++        "application/vnd.ms-excel.sheet.binary.macroenabled.12",
++        "application/vnd.ms-excel.sheet.macroenabled.12",
++        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
++        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
++        "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
++        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++        "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
++        "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
++        "application/vnd.openxmlformats-officedocument.presentationml.template",
++        "text/csv",
++        "text/plain",
++        "text/comma-separated-values",
++        "application/vnd.ms-works",
++        "application/vnd.apple.keynote",
++        "application/x-abiword",
++        "application/x-pagemaker",
++        "image/x-emf",
++        "image/x-svm",
++        "image/x-wmf",
++        "image/svg+xml",
++        "application/pdf",
++    };
++
++    private final Activity mActivity;
++    /** The asset to copy into the document being created by REQUEST_NEW. */
++    private String mPendingAsset;
++
++    public DesktopDocuments(Activity activity) {
++        mActivity = activity;
++    }
++
++    /** "uno .uno:Open": let the user pick a document. */
++    public void pickDocument() {
++        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
++        intent.addCategory(Intent.CATEGORY_OPENABLE);
++        intent.setType("*/*");
++        intent.putExtra(Intent.EXTRA_MIME_TYPES, OPEN_MIME_TYPES);
++        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
++                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
++                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
++        mActivity.startActivityForResult(intent, REQUEST_OPEN);
++    }
++
++    /**
++     * "newdoc type=writer|calc|impress|draw [template=PATH] basename=NAME"
++     * (values URI-encoded): ask where to create the document, then fill it
++     * from the template, a path in the web UI's dist/ like
++     * templates/files/text/CV.odt, or from the blank document of that type.
++     */
++    public void newDocument(String parameters) {
++        String type = "writer";
++        String template = null;
++        String basename = null;
++        for (String token : parameters.split(" ")) {
++            int equals = token.indexOf('=');
++            if (equals < 0)
++                continue;
++            String key = token.substring(0, equals);
++            String value = decode(token.substring(equals + 1));
++            if (key.equals("type"))
++                type = value;
++            else if (key.equals("template"))
++                template = value;
++            else if (key.equals("basename"))
++                basename = value;
++        }
++
++        String extension = extensionForType(type);
++        if (template != null && template.startsWith("templates/") && !template.contains(".."))
++            mPendingAsset = "dist/" + template;
++        else
++            mPendingAsset = "dist/templates/" + blankTemplateForType(type);
++
++        if (basename == null || basename.isEmpty())
++            basename = "Untitled";
++
++        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
++        intent.addCategory(Intent.CATEGORY_OPENABLE);
++        intent.setType(mimeTypeForExtension(extension));
++        intent.putExtra(Intent.EXTRA_TITLE, basename + "." + extension);
++        mActivity.startActivityForResult(intent, REQUEST_NEW);
++    }
++
++    /** Whether onActivityResult() is for this requestCode. */
++    public boolean handles(int requestCode) {
++        return requestCode == REQUEST_OPEN || requestCode == REQUEST_NEW;
++    }
++
++    /** @return the document to open, or null (cancelled, or it failed). */
++    public Uri onActivityResult(int requestCode, int resultCode, Intent data) {
++        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null)
++            return null;
++
++        Uri uri = data.getData();
++        try {
++            mActivity.getContentResolver().takePersistableUriPermission(uri,
++                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
++        } catch (SecurityException e) {
++            Log.w(TAG, "No persistable permission for " + uri + ": " + e.getMessage());
++        }
++
++        if (requestCode == REQUEST_NEW && !copyAsset(mPendingAsset, uri)) {
++            Toast.makeText(mActivity, R.string.cant_open_the_document, Toast.LENGTH_SHORT).show();
++            return null;
++        }
++
++        addToRecents(mActivity, uri);
++        return uri;
++    }
++
++    private boolean copyAsset(String asset, Uri target) {
++        try (InputStream in = mActivity.getAssets().open(asset);
++             OutputStream out = mActivity.getContentResolver().openOutputStream(target, "wt")) {
++            byte[] buffer = new byte[65536];
++            int length;
++            while ((length = in.read(buffer)) > 0)
++                out.write(buffer, 0, length);
++            return true;
++        } catch (Exception e) {
++            Log.e(TAG, "Couldn't copy " + asset + " to " + target, e);
++            return false;
++        }
++    }
++
++    /** The intent that opens uri for editing in LOActivity. */
++    public static Intent intentToEdit(Context context, Uri uri) {
++        Intent intent = new Intent(Intent.ACTION_EDIT, uri);
++        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
++        intent.setComponent(new ComponentName(context.getPackageName(), LOActivity.class.getName()));
++        return intent;
++    }
++
++    /** Put uri first in the recent documents the start screens show. */
++    public static void addToRecents(Context context, Uri uri) {
++        SharedPreferences prefs = context.getSharedPreferences(LOActivity.EXPLORER_PREFS_KEY, Context.MODE_PRIVATE);
++        List<String> recent = recentUris(prefs);
++        recent.remove(uri.toString());
++        recent.add(0, uri.toString());
++        while (recent.size() > MAX_RECENT_DOCUMENTS)
++            recent.remove(recent.size() - 1);
++        prefs.edit().putString(LOActivity.RECENT_DOCUMENTS_KEY, String.join("\n", recent)).apply();
++    }
++
++    private static List<String> recentUris(SharedPreferences prefs) {
++        List<String> uris = new ArrayList<>();
++        for (String line : prefs.getString(LOActivity.RECENT_DOCUMENTS_KEY, "").split("\n")) {
++            line = line.trim();
++            if (!line.isEmpty() && !uris.contains(line))
++                uris.add(line);
++        }
++        return uris;
++    }
++
++    /**
++     * GETRECENTDOCS: the recent documents that still exist, in the desktop
++     * app's format (common/RecentFiles.cpp), plus a readable displayUri for
++     * the path column and doctype for the icon.
++     */
++    public static String recentDocsJson(Context context) {
++        SharedPreferences prefs = context.getSharedPreferences(LOActivity.EXPLORER_PREFS_KEY, Context.MODE_PRIVATE);
++        ContentResolver resolver = context.getContentResolver();
++        SimpleDateFormat iso = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
++        iso.setTimeZone(TimeZone.getTimeZone("UTC"));
++        JSONArray documents = new JSONArray();
++        for (String uriString : recentUris(prefs)) {
++            if (documents.length() >= MAX_RECENT_SHOWN)
++                break;
++            Uri uri = Uri.parse(uriString);
++            String name = null;
++            long modified = 0;
++            try (Cursor cursor = resolver.query(uri, null, null, null, null)) {
++                if (cursor == null || !cursor.moveToFirst())
++                    continue;
++                int nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
++                int modifiedColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED);
++                if (nameColumn >= 0)
++                    name = cursor.getString(nameColumn);
++                if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn))
++                    modified = cursor.getLong(modifiedColumn);
++            } catch (Exception e) {
++                // Gone, or we lost the permission: leave it out, as the
++                // desktop app leaves out files that no longer exist.
++                continue;
++            }
++            if (name == null)
++                name = uri.getLastPathSegment();
++            try {
++                JSONObject document = new JSONObject();
++                document.put("uri", uriString);
++                document.put("name", name);
++                document.put("displayUri", "file://" + Uri.encode(displayPath(uri, name), "/"));
++                document.put("doctype", docTypeForName(name));
++                if (modified > 0)
++                    document.put("timestamp", iso.format(new Date(modified)));
++                documents.put(document);
++            } catch (JSONException e) {
++                Log.w(TAG, "Leaving out " + uriString + ": " + e.getMessage());
++            }
++        }
++        return documents.toString();
++    }
++
++    /**
++     * Where the document is, as a path to show: /Download/Letter.odt for
++     * shared storage (a "primary:Download/Letter.odt" document id), else just
++     * the name.
++     */
++    private static String displayPath(Uri uri, String name) {
++        try {
++            if (DocumentsContract.isDocumentUri(null, uri)) {
++                String id = DocumentsContract.getDocumentId(uri);
++                int colon = id.indexOf(':');
++                if (colon >= 0 && "com.android.externalstorage.documents".equals(uri.getAuthority()))
++                    return "/" + id.substring(colon + 1);
++            }
++        } catch (IllegalArgumentException e) {
++            // not a document URI
++        }
++        return "/" + name;
++    }
++
++    private static String decode(String value) {
++        try {
++            return URLDecoder.decode(value, "UTF-8");
++        } catch (Exception e) {
++            return value;
++        }
++    }
++
++    public static String extensionForType(String type) {
++        switch (type) {
++            case "calc": return "ods";
++            case "impress": return "odp";
++            case "draw": return "odg";
++            default: return "odt";
++        }
++    }
++
++    private static String blankTemplateForType(String type) {
++        switch (type) {
++            case "calc": return "Spreadsheet.ods";
++            case "impress": return "Presentation.odp";
++            case "draw": return "Drawing.odg";
++            default: return "TextDocument.odt";
++        }
++    }
++
++    private static String mimeTypeForExtension(String extension) {
++        switch (extension) {
++            case "ods": return "application/vnd.oasis.opendocument.spreadsheet";
++            case "odp": return "application/vnd.oasis.opendocument.presentation";
++            case "odg": return "application/vnd.oasis.opendocument.graphics";
++            default: return "application/vnd.oasis.opendocument.text";
++        }
++    }
++
++    private static String docTypeForName(String name) {
++        String lower = name.toLowerCase(Locale.ROOT);
++        if (lower.matches(".*\\.(ods|fods|ots|xls|xlsx|xlsm|xlsb|csv)$"))
++            return "calc";
++        if (lower.matches(".*\\.(odp|fodp|otp|ppt|pptx|pps|ppsx|key)$"))
++            return "impress";
++        if (lower.matches(".*\\.(odg|fodg|otg|vsd|vsdx|svg)$"))
++            return "draw";
++        if (lower.endsWith(".pdf"))
++            return "pdf";
++        return "writer";
++    }
++}
+diff --git a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+index 9e57bfe7d..2b4b192fe 100644
+--- a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
++++ b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+@@ -158,6 +158,8 @@ public class LOActivity extends AppCompatActivity {
+     /** In case the mobile-wizard is visible, we have to intercept the Android's Back button. */
+     private boolean mMobileWizardVisible = false;
+     private boolean mIsEditModeActive = false;
++    /** Open, New and recent documents for the desktop app's backstage view. */
++    private DesktopDocuments mDesktopDocuments;
+ 
+     /// True while a physical keyboard is attached and can be typed on. Written on the main thread
+     /// and read on the thread that serves the JavaScript bridge, so it is volatile.
+@@ -359,6 +361,7 @@ public class LOActivity extends AppCompatActivity {
+ 
+         setContentView(R.layout.lolib_activity_main);
+         updateCaptionBar(isDarkMode());
++        mDesktopDocuments = new DesktopDocuments(this);
+         mProgressDialog = new ProgressDialog(this);
+         if (BuildConfig.GOOGLE_PLAY_ENABLED)
+             this.rateAppController = new RateAppController(this);
+@@ -1081,6 +1084,12 @@ public class LOActivity extends AppCompatActivity {
+     @Override
+     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+         super.onActivityResult(requestCode, resultCode, intent);
++        if (mDesktopDocuments != null && mDesktopDocuments.handles(requestCode)) {
++            Uri document = mDesktopDocuments.onActivityResult(requestCode, resultCode, intent);
++            if (document != null)
++                openDocument(document);
++            return;
++        }
+         if (requestCode == REQUEST_ALL_FILES_ACCESS) {
+             mResolvedFile = resolveWritableFile(getIntent().getData());
+             if (mResolvedFile != null) {
+@@ -1335,9 +1344,8 @@ public class LOActivity extends AppCompatActivity {
+ 
+         mDarkModeApplied = isDarkMode();
+         updateCaptionBar(mDarkModeApplied);
+-        if (mDarkModeApplied) {
+-            finalUrlToLoad += "&darkTheme=true";
+-        }
++        // Say it either way: the web UI keeps the last one it was given.
++        finalUrlToLoad += mDarkModeApplied ? "&darkTheme=true" : "&darkTheme=false";
+ 
+         // load the page
+         mWebView.loadUrl(finalUrlToLoad);
+@@ -1429,6 +1437,24 @@ public class LOActivity extends AppCompatActivity {
+         return isDesktop(this);
+     }
+ 
++    /**
++     * On a PC, the web UI behaves as the desktop app (window.mode.isCODesktop()):
++     * the backstage File tab, Ctrl+O and Ctrl+N, and the messages below.
++     */
++    @JavascriptInterface
++    public boolean isCODesktop() {
++        return isDesktop(this);
++    }
++
++    /** A message that expects an answer (window.postMobileCall()). */
++    @JavascriptInterface
++    public String postMobileCall(String message) {
++        if (message.equals("GETRECENTDOCS"))
++            return DesktopDocuments.recentDocsJson(this);
++        postMobileMessage(message);
++        return null;
++    }
++
+     /**
+      * Tell the JavaScript side whether a physical keyboard is attached.
+      */
+@@ -1552,6 +1578,20 @@ public class LOActivity extends AppCompatActivity {
+                 switch (messageAndParam[1]) {
+                     case ".uno:Paste":
+                         return performPaste();
++                    case ".uno:Open":
++                        if (isDesktop(this)) {
++                            runOnUiThread(() -> mDesktopDocuments.pickDocument());
++                            return false;
++                        }
++                        break;
++                    case ".uno:SaveAs":
++                        // Save As switches to the new file, as a copy with
++                        // TakeOwnership does (REQUEST_COPY).
++                        if (isDesktop(this)) {
++                            runOnUiThread(() -> createNewFileInputDialog(this, getFileName(true), getMimeType(), REQUEST_COPY));
++                            return false;
++                        }
++                        break;
+                     default:
+                         break;
+                 }
+@@ -1624,10 +1664,97 @@ public class LOActivity extends AppCompatActivity {
+                 requestForCopy();
+                 return false;
+             }
++            case "opendoc": {
++                // "opendoc file=<URI-encoded uri>" from the backstage's recent documents
++                String param = messageAndParam.length > 1 ? messageAndParam[1] : "";
++                if (param.startsWith("file=")) {
++                    final Uri uri = Uri.parse(Uri.decode(param.substring(5)));
++                    runOnUiThread(() -> openDocument(uri));
++                }
++                return false;
++            }
++            case "newdoc": {
++                final String param = messageAndParam.length > 1 ? messageAndParam[1] : "";
++                runOnUiThread(() -> mDesktopDocuments.newDocument(param));
++                return false;
++            }
++            case "TEXTCLIPBOARD": {
++                final String text = messageAndParam.length > 1 ? messageAndParam[1] : "";
++                runOnUiThread(() -> clipboardManager.setPrimaryClip(ClipData.newPlainText("text", text)));
++                return false;
++            }
++            case "SETDARKMODE": {
++                // The user switched the theme in the web UI: remember it, as the
++                // start screen's setting does, and repaint under the caption bar.
++                final boolean dark = messageAndParam.length > 1 && messageAndParam[1].equals("true");
++                getSharedPreferences(EXPLORER_PREFS_KEY, MODE_PRIVATE).edit()
++                        .putInt(NIGHT_MODE_KEY, dark ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO)
++                        .apply();
++                mDarkModeApplied = dark;
++                runOnUiThread(() -> updateCaptionBar(dark));
++                return false;
++            }
++            case "FULLSCREENPRESENTATION": {
++                final boolean fullscreen = messageAndParam.length > 1 && messageAndParam[1].equals("true");
++                runOnUiThread(() -> setSystemBarsHidden(fullscreen));
++                return false;
++            }
++            case "LICENSE": {
++                runOnUiThread(() -> {
++                    Intent intent = new Intent();
++                    intent.setClassName(getPackageName(), "org.libreoffice.androidapp.ShowHTMLActivity");
++                    intent.putExtra("path", "license.html");
++                    try {
++                        startActivity(intent);
++                    } catch (android.content.ActivityNotFoundException e) {
++                        Log.w(TAG, "No license viewer: " + e.getMessage());
++                    }
++                });
++                return false;
++            }
++            // Desktop app messages with nothing to do here; COOLWSD would answer
++            // them with an "unknown command" error.
++            case "WELCOME":
++            case "EXCHANGEMONITORS":
++            case "SAVESTARTED":
++            case "SAVECOMPLETED":
++            case "CLOSE_WINDOW":
++            case "COMMANDSTATECHANGED":
++            case "COMMANDRESULT":
++            case "CLIPBOARDMIMETYPES":
++            case "SYNCSETTINGS":
++            case "UPLOADSETTINGS":
++            case "FETCHSETTINGSFILE":
++            case "FETCHSETTINGSCONFIG":
++            case "FETCHAIMODELS":
++            case "REMOTEBOOTSTRAPFAILED":
++            case "switchToServerMode":
++                return false;
+         }
+         return true;
+     }
+ 
++    /** Open another document: this activity saves and closes this one first (onNewIntent). */
++    private void openDocument(Uri uri) {
++        DesktopDocuments.addToRecents(this, uri);
++        startActivity(DesktopDocuments.intentToEdit(this, uri));
++    }
++
++    /** Full screen for a slideshow, as the desktop app does. */
++    private void setSystemBarsHidden(boolean hidden) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R)
++            return;
++        WindowInsetsController controller = getWindow().getInsetsController();
++        if (controller == null)
++            return;
++        if (hidden) {
++            controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
++            controller.hide(WindowInsets.Type.systemBars());
++        } else {
++            controller.show(WindowInsets.Type.systemBars());
++        }
++    }
++
+     public static void createNewFileInputDialog(Activity activity, final String defaultFileName, final @Nullable String mimeType, final int requestCode) {
+         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+ 
+-- 
+2.47.3
+

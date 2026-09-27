@@ -29,6 +29,8 @@ a window behind a veil while you resize it. Run
 - Resizing the window or moving it to another display doesn't restart the
   document.
 - The window's caption bar matches the app instead of the wallpaper.
+- The desktop app's start screen (recent documents, templates, Open) and
+  its File tab (New, Open, Save As, Export, Print), Ctrl+O and Ctrl+N.
 - Its own name and package (`local.officebook`), so it isn't mistaken for
   Collabora's official app.
 - English only for now.

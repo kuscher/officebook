@@ -1,7 +1,7 @@
 From e231785614dcef08546ae3bb8d01084bcfe56e79 Mon Sep 17 00:00:00 2001
 From: Alexander <4418484+kuscher@users.noreply.github.com>
 Date: Sat, 26 Sep 2026 21:37:46 +0000
-Subject: [PATCH 2/4] fix(android): keep documents open when a desktop window
+Subject: [PATCH 2/9] fix(android): keep documents open when a desktop window
  is resized
 
 In a freeform window (ChromeOS, Android's desktop mode) resizing crosses

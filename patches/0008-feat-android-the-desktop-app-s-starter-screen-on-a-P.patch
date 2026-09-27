@@ -1,0 +1,292 @@
+From 4e2773ca6d96f417c8ec3508eb187145be654c55 Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:33:38 +0000
+Subject: [PATCH 8/9] feat(android): the desktop app's starter screen on a PC
+
+On a PC the app opened on its own start screen, a phone-style list of
+recent files with a floating "+" button, where Collabora Office on the
+desktop shows its starter screen: the web UI's backstage view in starter
+mode, with the recent documents, New from the templates, and Open.
+
+StarterActivity loads that screen (cool.html?starterMode=true) in a
+WebView with no document and no COOLWSD, and answers its messages
+(GETRECENTDOCS, opendoc, newdoc, uno .uno:Open, SETDARKMODE) with
+DesktopDocuments, opening documents in LOActivity. It reloads when a
+document is closed, so the list is current. The launcher's start screen
+hands over to it on a PC; phones and tablets keep theirs.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ android/app/src/main/AndroidManifest.xml      |   6 +
+ .../androidapp/ui/LibreOfficeUIActivity.java  |   7 +
+ .../androidapp/ui/StarterActivity.java        | 223 ++++++++++++++++++
+ 3 files changed, 236 insertions(+)
+ create mode 100644 android/app/src/main/java/org/libreoffice/androidapp/ui/StarterActivity.java
+
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 62758c60f..5235f82bb 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -46,6 +46,12 @@
+             </intent-filter>
+         </activity>
+ 
++        <!-- The start screen on a PC: the desktop app's starter screen -->
++        <activity
++            android:name=".ui.StarterActivity"
++            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|uiMode"
++            android:exported="false" />
++
+         <!-- The main document editing Activity -->
+         <activity
+             android:name="org.libreoffice.androidlib.LOActivity"
+diff --git a/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java b/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
+index 874804ff8..11e2e76f3 100644
+--- a/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
++++ b/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
+@@ -167,6 +167,13 @@ public class LibreOfficeUIActivity extends AppCompatActivity implements Settings
+         AppCompatDelegate.setDefaultNightMode(mode);
+         super.onCreate(savedInstanceState);
+ 
++        // On a PC the start screen is the desktop app's (StarterActivity).
++        if (LOActivity.isDesktop(this) && Intent.ACTION_MAIN.equals(getIntent().getAction())) {
++            startActivity(new Intent(this, StarterActivity.class));
++            finish();
++            return;
++        }
++
+         // initialize document provider factory
+         //DocumentProviderFactory.initialize(this);
+         //documentProviderFactory = DocumentProviderFactory.getInstance();
+diff --git a/android/app/src/main/java/org/libreoffice/androidapp/ui/StarterActivity.java b/android/app/src/main/java/org/libreoffice/androidapp/ui/StarterActivity.java
+new file mode 100644
+index 000000000..b3149ef67
+--- /dev/null
++++ b/android/app/src/main/java/org/libreoffice/androidapp/ui/StarterActivity.java
+@@ -0,0 +1,223 @@
++/* -*- tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++package org.libreoffice.androidapp.ui;
++
++import android.content.ActivityNotFoundException;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.content.res.Configuration;
++import android.graphics.Insets;
++import android.graphics.drawable.ColorDrawable;
++import android.net.Uri;
++import android.os.Build;
++import android.os.Bundle;
++import android.util.Log;
++import android.view.ViewGroup;
++import android.view.WindowInsets;
++import android.webkit.JavascriptInterface;
++import android.webkit.WebSettings;
++import android.webkit.WebView;
++
++import androidx.appcompat.app.AppCompatActivity;
++import androidx.appcompat.app.AppCompatDelegate;
++import androidx.preference.PreferenceManager;
++
++import org.libreoffice.androidlib.COWebView;
++import org.libreoffice.androidlib.DesktopDocuments;
++import org.libreoffice.androidlib.LOActivity;
++
++import java.util.Locale;
++
++/**
++ * The start screen on a PC: the desktop app's starter screen (the web UI's
++ * backstage view in starter mode, with the recent documents, New from the
++ * templates, and Open), in place of LibreOfficeUIActivity's list. It needs
++ * no document and no COOLWSD: it answers the few messages the starter
++ * screen sends, and opens documents in LOActivity.
++ */
++public class StarterActivity extends AppCompatActivity {
++    private static final String TAG = "StarterActivity";
++
++    private COWebView mWebView;
++    private DesktopDocuments mDocuments;
++    private boolean mDarkMode;
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        mDocuments = new DesktopDocuments(this);
++
++        mWebView = new COWebView(this);
++        setContentView(mWebView);
++
++        // Below the system bars and the caption bar; the window's background,
++        // the web UI's own, shows under the (transparent) caption bar.
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++            mWebView.setOnApplyWindowInsetsListener((v, windowInsets) -> {
++                Insets insets = windowInsets.getInsets(WindowInsets.Type.systemBars());
++                ViewGroup.MarginLayoutParams margins = (ViewGroup.MarginLayoutParams) v.getLayoutParams();
++                margins.setMargins(insets.left, insets.top, insets.right, insets.bottom);
++                v.setLayoutParams(margins);
++                return WindowInsets.CONSUMED;
++            });
++        }
++
++        WebSettings settings = mWebView.getSettings();
++        settings.setJavaScriptEnabled(true);
++        settings.setDomStorageEnabled(true);
++        if (PreferenceManager.getDefaultSharedPreferences(this).getBoolean("ENABLE_CHROME_DEBUGGING", false))
++            WebView.setWebContentsDebuggingEnabled(true);
++        mWebView.addJavascriptInterface(new Host(), "COOLMessageHandler");
++
++        load();
++    }
++
++    private void load() {
++        mDarkMode = isDarkMode();
++        getWindow().setBackgroundDrawable(new ColorDrawable(mDarkMode ? 0xFF121212 : 0xFFF8F9FA));
++        LOActivity.useTransparentCaptionBar(this, mDarkMode);
++
++        String language = getResources().getConfiguration().getLocales().get(0).toLanguageTag();
++        mWebView.loadUrl("file:///android_asset/dist/cool.html?starterMode=true"
++                + "&lang=" + Uri.encode(language)
++                + "&darkTheme=" + mDarkMode
++                + "&userinterfacemode=notebookbar");
++    }
++
++    @Override
++    protected void onRestart() {
++        super.onRestart();
++        // Back from a document: show it among the recent ones, in the theme
++        // it may have switched to.
++        load();
++    }
++
++    @Override
++    public void onConfigurationChanged(Configuration newConfig) {
++        super.onConfigurationChanged(newConfig);
++        if (isDarkMode() != mDarkMode)
++            load();
++    }
++
++    /** The app's dark mode setting (the start screen's, or the web UI's SETDARKMODE). */
++    private boolean isDarkMode() {
++        SharedPreferences prefs = getSharedPreferences(LOActivity.EXPLORER_PREFS_KEY, MODE_PRIVATE);
++        int mode = prefs.getInt(LOActivity.NIGHT_MODE_KEY, AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
++        if (mode == AppCompatDelegate.MODE_NIGHT_YES)
++            return true;
++        if (mode == AppCompatDelegate.MODE_NIGHT_NO)
++            return false;
++        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
++                == Configuration.UI_MODE_NIGHT_YES;
++    }
++
++    @Override
++    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
++        super.onActivityResult(requestCode, resultCode, data);
++        if (mDocuments.handles(requestCode)) {
++            Uri document = mDocuments.onActivityResult(requestCode, resultCode, data);
++            if (document != null)
++                open(document);
++        }
++    }
++
++    private void open(Uri uri) {
++        DesktopDocuments.addToRecents(this, uri);
++        startActivity(DesktopDocuments.intentToEdit(this, uri));
++    }
++
++    @Override
++    protected void onDestroy() {
++        if (mWebView != null) {
++            mWebView.destroy();
++            mWebView = null;
++        }
++        super.onDestroy();
++    }
++
++    /** What the starter screen asks of the app (window.COOLMessageHandler). */
++    private class Host {
++        @JavascriptInterface
++        public boolean isChromeOS() {
++            return LOActivity.isDesktop(StarterActivity.this);
++        }
++
++        @JavascriptInterface
++        public boolean isCODesktop() {
++            return LOActivity.isDesktop(StarterActivity.this);
++        }
++
++        @JavascriptInterface
++        public boolean hasHardwareKeyboard() {
++            return getResources().getConfiguration().keyboard != Configuration.KEYBOARD_NOKEYS;
++        }
++
++        @JavascriptInterface
++        public String postMobileCall(String message) {
++            if (message.equals("GETRECENTDOCS"))
++                return DesktopDocuments.recentDocsJson(StarterActivity.this);
++            postMobileMessage(message);
++            return null;
++        }
++
++        @JavascriptInterface
++        public void postMobileMessage(String message) {
++            String[] commandAndParameters = message.split(" ", 2);
++            String parameters = commandAndParameters.length > 1 ? commandAndParameters[1] : "";
++            switch (commandAndParameters[0]) {
++                case "opendoc":
++                    // "opendoc file=<URI-encoded uri>": a recent document
++                    if (parameters.startsWith("file=")) {
++                        final Uri uri = Uri.parse(Uri.decode(parameters.substring(5)));
++                        runOnUiThread(() -> open(uri));
++                    }
++                    break;
++                case "newdoc":
++                    runOnUiThread(() -> mDocuments.newDocument(parameters));
++                    break;
++                case "uno":
++                    if (parameters.equals(".uno:Open"))
++                        runOnUiThread(() -> mDocuments.pickDocument());
++                    break;
++                case "SETDARKMODE": {
++                    boolean dark = parameters.equals("true");
++                    getSharedPreferences(LOActivity.EXPLORER_PREFS_KEY, MODE_PRIVATE).edit()
++                            .putInt(LOActivity.NIGHT_MODE_KEY,
++                                    dark ? AppCompatDelegate.MODE_NIGHT_YES : AppCompatDelegate.MODE_NIGHT_NO)
++                            .apply();
++                    runOnUiThread(() -> LOActivity.useTransparentCaptionBar(StarterActivity.this, dark));
++                    break;
++                }
++                case "HYPERLINK":
++                    runOnUiThread(() -> {
++                        try {
++                            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(parameters)));
++                        } catch (ActivityNotFoundException e) {
++                            Log.w(TAG, "Nothing opens " + parameters);
++                        }
++                    });
++                    break;
++                default:
++                    // The starter screen has no document: the rest (the fake
++                    // socket's greeting, for one) has nowhere to go.
++                    Log.d(TAG, "postMobileMessage ignored: " + commandAndParameters[0]);
++                    break;
++            }
++        }
++
++        @JavascriptInterface
++        public void postMobileError(String message) {
++            Log.e(TAG, "web UI: " + message);
++        }
++
++        @JavascriptInterface
++        public void postMobileDebug(String message) {
++            Log.d(TAG, "web UI: " + message);
++        }
++    }
++}
+-- 
+2.47.3
+

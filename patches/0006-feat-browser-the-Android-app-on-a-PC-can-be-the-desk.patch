@@ -1,0 +1,266 @@
+From f9b4e3b409f746893363baedc91e69643ff4188a Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:30:01 +0000
+Subject: [PATCH 6/9] feat(browser): the Android app on a PC can be the desktop
+ app
+
+On ChromeOS and in Android's desktop mode the Android app runs in a
+resizable window with a keyboard and a mouse, like Collabora Office on
+Windows, macOS and Linux, but the web UI only enables the desktop app's
+behaviour (window.mode.isCODesktop(): the backstage File tab and starter
+screen, the ruler by default, Ctrl+O and Ctrl+N, ...) for those three.
+
+Let the Android app opt in: isCODesktop() is also true when the app's
+COOLMessageHandler.isCODesktop() says so, asked once on first use like
+isChromebook(). postMobileCall() returns the app's answer when the app
+has a postMobileCall(), which the starter screen needs for
+GETRECENTDOCS. The starter screen has no document and uses the
+FakeWebSocket, as the desktop apps do. Ctrl+O and Ctrl+N map to Open and
+the backstage's New tab for the Chromebook platform.
+
+Some desktop features need things the Android app doesn't have, so they
+stay off there: the presenter console and swapping monitors (a second
+window), the welcome slideshow and "latest updates" (not packaged),
+task workers (a file:// origin), and the Options dialog and AI set-up
+(settings storage).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ browser/js/global.js                          | 22 ++++++++++++++++---
+ browser/src/app/Socket.ts                     |  4 +++-
+ browser/src/control/Control.BackstageView.ts  |  3 ++-
+ browser/src/control/Control.Menubar.ts        |  2 +-
+ .../src/control/Control.NotebookbarImpress.js |  2 +-
+ .../src/control/Control.NotebookbarWriter.js  |  2 +-
+ browser/src/control/Control.UIManager.ts      |  3 ++-
+ browser/src/docdispatcher.ts                  |  2 +-
+ .../src/map/handler/Map.KeyboardShortcuts.ts  |  6 ++---
+ browser/src/map/handler/Map.Welcome.js        |  3 ++-
+ browser/src/slideshow/PresenterConsole.js     |  4 ++--
+ browser/src/slideshow/SlideShowPresenter.ts   |  2 +-
+ 12 files changed, 38 insertions(+), 17 deletions(-)
+
+diff --git a/browser/js/global.js b/browser/js/global.js
+index 16e9faa2b..5cab59fb3 100644
+--- a/browser/js/global.js
++++ b/browser/js/global.js
+@@ -84,6 +84,8 @@ class BrowserProperties {
+ 		// Decided on first use, not here: this runs from InitializerBase's
+ 		// constructor, before AndroidAppInitializer sets ThisIsTheAndroidApp.
+ 		var chromebook;
++		// Likewise whether the Android app runs as the desktop app (on a PC).
++		var androidDesktopApp;
+ 
+ 		var navigatorLang = navigator.languages && navigator.languages.length ? navigator.languages[0] :
+ 		(navigator.language || navigator.userLanguage || navigator.browserLanguage || navigator.systemLanguage);
+@@ -207,7 +209,14 @@ class BrowserProperties {
+ 				return global.L.Browser.mobile && !global.mode.isSmallScreenDevice();
+ 			},
+ 			isCODesktop: function() {
+-				return global.ThisIsTheMacOSApp || global.ThisIsTheQtApp || global.ThisIsTheWindowsApp;
++				if (global.ThisIsTheMacOSApp || global.ThisIsTheQtApp || global.ThisIsTheWindowsApp)
++					return true;
++				// The Android app on a PC (ChromeOS, Android's desktop mode) is the
++				// desktop app too, if it says so.
++				if (androidDesktopApp === undefined && global.ThisIsTheAndroidApp)
++					androidDesktopApp = typeof global.COOLMessageHandler.isCODesktop === 'function'
++						&& !!global.COOLMessageHandler.isCODesktop();
++				return !!androidDesktopApp;
+ 			},
+ 			isDesktop: function() {
+ 				if (global.ThisIsTheWindowsApp || global.ThisIsTheQtApp	|| global.ThisIsTheMacOSApp)
+@@ -627,7 +636,11 @@ class AndroidAppInitializer extends MobileAppInitializer {
+ 
+ 		window.ThisIsTheAndroidApp = true;
+ 		window.postMobileMessage = function(msg) { window.COOLMessageHandler.postMobileMessage(msg); };
+-		window.postMobileCall    = window.postMobileMessage;
++		// postMobileCall returns the app's answer (a string, or null); older apps
++		// only have postMobileMessage.
++		window.postMobileCall    = typeof window.COOLMessageHandler.postMobileCall === 'function'
++			? function(msg) { return window.COOLMessageHandler.postMobileCall(msg); }
++			: window.postMobileMessage;
+ 		window.postMobileError   = function(msg) { window.COOLMessageHandler.postMobileError(msg); };
+ 		window.postMobileDebug   = function(msg) { window.COOLMessageHandler.postMobileDebug(msg); };
+ 
+@@ -2232,7 +2245,10 @@ function showWelcomeSVG() {
+ 
+ 	// Create a WebSocket to the server
+ 	// FIXME The Android and iOS apps use the new approach, other apps should follow
+-	if (global.ThisIsAMobileApp && !global.ThisIsTheAndroidApp && !global.ThisIsTheiOSApp) {
++	// The Android app's starter screen has no document, so no socket to talk to
++	// either: use the FakeWebSocket, as the desktop apps do.
++	if ((global.ThisIsAMobileApp && !global.ThisIsTheAndroidApp && !global.ThisIsTheiOSApp)
++	    || (global.ThisIsTheAndroidApp && window.starterScreen)) {
+ 		// FIXME Remove FakeWebSocket when the mobile apps are updated to use the new approach
+ 		global.socket = new global.FakeWebSocket();
+ 		global.TheFakeWebSocket = global.socket;
+diff --git a/browser/src/app/Socket.ts b/browser/src/app/Socket.ts
+index fcec62780..1622171fc 100644
+--- a/browser/src/app/Socket.ts
++++ b/browser/src/app/Socket.ts
+@@ -88,7 +88,9 @@ class Socket {
+ 
+ 		if (
+ 			window.Worker &&
+-			(!(window as any).ThisIsAMobileApp || (window as any).mode.isCODesktop())
++			(!(window as any).ThisIsAMobileApp ||
++				// Not in the Android app: workers can't load from file:// there.
++				((window as any).mode.isCODesktop() && !(window as any).ThisIsTheAndroidApp))
+ 		) {
+ 			window.app.console.info('Creating TaskWorkers');
+ 			for (let i = 0; i < 4; ++i) {
+diff --git a/browser/src/control/Control.BackstageView.ts b/browser/src/control/Control.BackstageView.ts
+index 60a899686..5ed23e2a4 100644
+--- a/browser/src/control/Control.BackstageView.ts
++++ b/browser/src/control/Control.BackstageView.ts
+@@ -187,7 +187,8 @@ class BackstageView extends window.L.Class {
+ 				label: _('Options'),
+ 				type: 'action',
+ 				actionType: 'options',
+-				visible: !this.isStarterMode,
++				// The Android app has no settings storage for the dialog.
++				visible: !this.isStarterMode && !window.ThisIsTheAndroidApp,
+ 			},
+ 			{
+ 				id: 'about',
+diff --git a/browser/src/control/Control.Menubar.ts b/browser/src/control/Control.Menubar.ts
+index 6176ca087..f1c399c9c 100644
+--- a/browser/src/control/Control.Menubar.ts
++++ b/browser/src/control/Control.Menubar.ts
+@@ -635,7 +635,7 @@ class Menubar extends window.L.Control {
+ 				{name: _('Fullscreen presentation'), id: 'fullscreen-presentation', type: 'action'},
+ 				{name: _('Present current slide'), id: 'presentation-currentslide', type: 'action'},
+ 				{name: _('Present in new window'), id: 'present-in-window', type: 'action'},
+-				...((!window.ThisIsAMobileApp || window.mode.isCODesktop()) ? [
++				...((!window.ThisIsAMobileApp || (window.mode.isCODesktop() && !window.ThisIsTheAndroidApp)) ? [
+ 					{name: _('Presenter Console'), id: 'presentation-in-console', type: 'action'}
+ 				] : [])
+ 			]
+diff --git a/browser/src/control/Control.NotebookbarImpress.js b/browser/src/control/Control.NotebookbarImpress.js
+index d5533a0e5..f3a77a11d 100644
+--- a/browser/src/control/Control.NotebookbarImpress.js
++++ b/browser/src/control/Control.NotebookbarImpress.js
+@@ -501,7 +501,7 @@ window.L.Control.NotebookbarImpress = window.L.Control.NotebookbarWriter.extend(
+ 						'command': 'presentation-currentslide',
+ 						'accessibility': { focusBack: true, combination: 'FC', de: null }
+ 					},
+-					(!window.ThisIsAMobileApp || window.mode.isCODesktop()) && window.canvasSlideshowEnabled ?
++					(!window.ThisIsAMobileApp || (window.mode.isCODesktop() && !window.ThisIsTheAndroidApp)) && window.canvasSlideshowEnabled ?
+ 					{
+ 						'id': 'slide-presentation-in-console',
+ 						'type': 'bigcustomtoolitem',
+diff --git a/browser/src/control/Control.NotebookbarWriter.js b/browser/src/control/Control.NotebookbarWriter.js
+index cceb04cd3..6553927c1 100644
+--- a/browser/src/control/Control.NotebookbarWriter.js
++++ b/browser/src/control/Control.NotebookbarWriter.js
+@@ -431,7 +431,7 @@ window.L.Control.NotebookbarWriter = window.L.Control.Notebookbar.extend({
+ 	},
+ 
+ 	getHelpTab: function() {
+-		let hasLatestUpdates = window.enableWelcomeMessage || window.mode.isCODesktop();
++		let hasLatestUpdates = window.enableWelcomeMessage || (window.mode.isCODesktop() && !window.ThisIsTheAndroidApp);
+ 		var hasFeedback = this.map.feedback;
+ 		var hasAccessibilitySupport = window.enableAccessibility;
+ 		var hasAccessibilityCheck = this.map.getDocType() === 'text';
+diff --git a/browser/src/control/Control.UIManager.ts b/browser/src/control/Control.UIManager.ts
+index cfd0a14bd..7bf442435 100644
+--- a/browser/src/control/Control.UIManager.ts
++++ b/browser/src/control/Control.UIManager.ts
+@@ -3120,7 +3120,8 @@ class UIManager extends window.L.Control {
+ 	shouldShowPresenterConsole(): boolean {
+ 		return this.getBooleanDocTypePref(
+ 			'ShowPresenterConsole',
+-			window.mode.isCODesktop(),
++			// Not in the Android app: it has one window.
++			window.mode.isCODesktop() && !window.ThisIsTheAndroidApp,
+ 		);
+ 	}
+ 
+diff --git a/browser/src/docdispatcher.ts b/browser/src/docdispatcher.ts
+index d604f5c20..45bf5ba56 100644
+--- a/browser/src/docdispatcher.ts
++++ b/browser/src/docdispatcher.ts
+@@ -603,7 +603,7 @@ class Dispatcher {
+ 	// menu leads straight to the same dialog, so a snackbar with the path
+ 	// is enough.
+ 	private static promptAISetup() {
+-		if (window.mode.isCODesktop()) {
++		if (window.mode.isCODesktop() && !window.ThisIsTheAndroidApp) {
+ 			(app.map as any).settings.showSettingsDialog('ai-section');
+ 		} else {
+ 			app.map.uiManager.showSnackbar(
+diff --git a/browser/src/map/handler/Map.KeyboardShortcuts.ts b/browser/src/map/handler/Map.KeyboardShortcuts.ts
+index 4026b78f9..b8024457e 100644
+--- a/browser/src/map/handler/Map.KeyboardShortcuts.ts
++++ b/browser/src/map/handler/Map.KeyboardShortcuts.ts
+@@ -360,7 +360,7 @@ keyboardShortcuts.definitions.set('default', new Array<ShortcutDescriptor>(
+     // ShortcutDescriptor constructor.
+ 
+     // All document types.
+-    new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'o', platform: Platform.CODAWINDOWS | Platform.CODAMAC | Platform.CODAQT, unoAction: '.uno:Open' }),
++    new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'o', platform: Platform.CODAWINDOWS | Platform.CODAMAC | Platform.CODAQT | Platform.CHROMEOSAPP, unoAction: '.uno:Open' }),
+ 
+     new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'w', platform: Platform.CODAWINDOWS | Platform.CODAQT, unoAction: '.uno:CloseWin', showViewModeAttention: false }),
+ 
+@@ -441,8 +441,8 @@ keyboardShortcuts.definitions.set('default', new Array<ShortcutDescriptor>(
+     new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'm', preventDefault: false, platform: Platform.MAC }), // On MacOS, minimize window
+     new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'q', preventDefault: false, platform: Platform.MAC }), // On MacOS, quit browser
+     new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'w', platform: Platform.LINUX | Platform.WINDOWS | Platform.MAC, preventDefault: false }), // Close current tab
+-    new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'n', dispatchAction: 'backstage-new', platform: Platform.CODAWINDOWS | Platform.CODAMAC | Platform.CODAQT }), // Open backstage "New" tab in desktop apps
+-    new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'n', preventDefault: false, platform: ~(Platform.CODAWINDOWS | Platform.CODAMAC | Platform.CODAQT) }), // Open new browser window (everywhere except desktop apps)
++    new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'n', dispatchAction: 'backstage-new', platform: Platform.CODAWINDOWS | Platform.CODAMAC | Platform.CODAQT | Platform.CHROMEOSAPP }), // Open backstage "New" tab in desktop apps
++    new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 'n', preventDefault: false, platform: ~(Platform.CODAWINDOWS | Platform.CODAMAC | Platform.CODAQT | Platform.CHROMEOSAPP) }), // Open new browser window (everywhere except desktop apps)
+     new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: 't', preventDefault: false }), // Open new browser tab
+     new ShortcutDescriptor({ eventType: 'keydown', modifier: Mod.CTRL, key: '`', preventDefault: false, platform: Platform.MAC }), // Cycle through windows
+ ));
+diff --git a/browser/src/map/handler/Map.Welcome.js b/browser/src/map/handler/Map.Welcome.js
+index ffdcb30b6..e3f0b2048 100644
+--- a/browser/src/map/handler/Map.Welcome.js
++++ b/browser/src/map/handler/Map.Welcome.js
+@@ -170,6 +170,7 @@ window.L.Map.Welcome = window.L.Handler.extend({
+ 	}
+ });
+ 
+-if (!window.L.Browser.cypressTest && (window.enableWelcomeMessage || window.mode.isCODesktop()) && window.prefs.canPersist) {
++// The Android app doesn't package the welcome slideshow.
++if (!window.L.Browser.cypressTest && (window.enableWelcomeMessage || (window.mode.isCODesktop() && !window.ThisIsTheAndroidApp)) && window.prefs.canPersist) {
+ 	window.L.Map.addInitHook('addHandler', 'welcome', window.L.Map.Welcome);
+ }
+diff --git a/browser/src/slideshow/PresenterConsole.js b/browser/src/slideshow/PresenterConsole.js
+index 9df1371e9..0c34632a2 100644
+--- a/browser/src/slideshow/PresenterConsole.js
++++ b/browser/src/slideshow/PresenterConsole.js
+@@ -248,7 +248,7 @@ class PresenterConsole {
+ 
+ 	_openPresenterWindow() {
+ 		const windowopen =
+-			window.mode.isCODesktop() && window.origOpen
++			window.mode.isCODesktop() && !window.ThisIsTheAndroidApp && window.origOpen
+ 				? window.origOpen
+ 				: window.open;
+ 		// The fragment names the window's role to the shell. Read in
+@@ -656,7 +656,7 @@ class PresenterConsole {
+ 		}
+ 
+ 		// By default hide the exchange monitors button
+-		if (!window.mode.isCODesktop()) {
++		if (!window.mode.isCODesktop() || window.ThisIsTheAndroidApp) {
+ 			let exchangeMonitorsButton =
+ 				this._proxyPresenter.document.querySelector('#exchange');
+ 			exchangeMonitorsButton.style.display = 'none';
+diff --git a/browser/src/slideshow/SlideShowPresenter.ts b/browser/src/slideshow/SlideShowPresenter.ts
+index b6f6c34e0..ca2862f58 100644
+--- a/browser/src/slideshow/SlideShowPresenter.ts
++++ b/browser/src/slideshow/SlideShowPresenter.ts
+@@ -926,7 +926,7 @@ class SlideShowPresenter {
+ 			}.bind(this),
+ 		);
+ 
+-		if (showSwitchMonitors && window.mode.isCODesktop()) {
++		if (showSwitchMonitors && window.mode.isCODesktop() && !window.ThisIsTheAndroidApp) {
+ 			const ExchangeImg = window.L.DomUtil.create(
+ 				'img',
+ 				'right-img',
+-- 
+2.47.3
+

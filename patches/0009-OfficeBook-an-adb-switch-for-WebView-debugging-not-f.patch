@@ -1,0 +1,81 @@
+From 73b7b6a877ecd2ee7dee125ae8477b0f3b08afbd Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:33:55 +0000
+Subject: [PATCH 9/9] OfficeBook: an adb switch for WebView debugging (not for
+ upstream)
+
+A broadcast receiver guarded by DUMP, so only adb's shell can send it,
+sets the "Enable Chrome debugging" preference: the Settings screen that
+has it hangs off the phone-style start screen, which a PC no longer
+shows. ./ob devtools on|off sends it.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ android/app/src/main/AndroidManifest.xml      | 10 ++++++
+ .../libreoffice/androidapp/DebugReceiver.java | 33 +++++++++++++++++++
+ 2 files changed, 43 insertions(+)
+ create mode 100644 android/app/src/main/java/org/libreoffice/androidapp/DebugReceiver.java
+
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 5235f82bb..b12901ca2 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -46,6 +46,16 @@
+             </intent-filter>
+         </activity>
+ 
++        <!-- OfficeBook's development switch (WebView debugging), for adb only -->
++        <receiver
++            android:name=".DebugReceiver"
++            android:exported="true"
++            android:permission="android.permission.DUMP">
++            <intent-filter>
++                <action android:name="local.officebook.DEBUG" />
++            </intent-filter>
++        </receiver>
++
+         <!-- The start screen on a PC: the desktop app's starter screen -->
+         <activity
+             android:name=".ui.StarterActivity"
+diff --git a/android/app/src/main/java/org/libreoffice/androidapp/DebugReceiver.java b/android/app/src/main/java/org/libreoffice/androidapp/DebugReceiver.java
+new file mode 100644
+index 000000000..2d76e48c5
+--- /dev/null
++++ b/android/app/src/main/java/org/libreoffice/androidapp/DebugReceiver.java
+@@ -0,0 +1,33 @@
++/* -*- tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++package org.libreoffice.androidapp;
++
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.util.Log;
++
++import androidx.preference.PreferenceManager;
++
++/**
++ * OfficeBook's development switch: `adb shell am broadcast -a local.officebook.DEBUG
++ * -p local.officebook --ez devtools true` turns on WebView debugging (the
++ * "Enable Chrome debugging" setting) for windows opened afterwards. The
++ * manifest guards it with DUMP, which only the shell holds.
++ */
++public class DebugReceiver extends BroadcastReceiver {
++    @Override
++    public void onReceive(Context context, Intent intent) {
++        if (!intent.hasExtra("devtools"))
++            return;
++        boolean on = intent.getBooleanExtra("devtools", false);
++        PreferenceManager.getDefaultSharedPreferences(context).edit()
++                .putBoolean("ENABLE_CHROME_DEBUGGING", on).apply();
++        Log.i("OfficeBook", "WebView debugging " + (on ? "on" : "off") + " for new windows");
++    }
++}
+-- 
+2.47.3
+

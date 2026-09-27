@@ -1,7 +1,7 @@
 From 768f4a1883ef7b40b60c1625ebfa5b3a40afbaf4 Mon Sep 17 00:00:00 2001
 From: Alexander <4418484+kuscher@users.noreply.github.com>
 Date: Sun, 27 Sep 2026 03:06:12 +0000
-Subject: [PATCH 3/4] feat(android): tabbed ribbon on desktops, like the
+Subject: [PATCH 3/9] feat(android): tabbed ribbon on desktops, like the
  desktop app
 
 The app asks the web UI for the tabbed ribbon ("notebookbar") on tablets

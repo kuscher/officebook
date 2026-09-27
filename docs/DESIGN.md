@@ -45,6 +45,38 @@ three layers in one APK:
    the web UI's `--color-main-background` under it, and the start screen's
    toolbar already reaches up under it.
 
+5. **Chromebook detection (a web UI bug).** `global.mode.isChromebook()`
+   was computed in `InitializerBase`'s constructor, before
+   `AndroidAppInitializer` sets `ThisIsTheAndroidApp`, so it was always
+   false: the app on ChromeOS (and with patch 1, on a Googlebook) took the
+   tablet paths, with the floating edit button. It's now asked on first use.
+6. **The desktop app's behaviour (web UI).** `window.mode.isCODesktop()`
+   unlocks what Collabora Office on Windows, macOS and Linux does
+   differently: the backstage view (a full-window File tab with New, Open,
+   recent documents, Save As, Export, Print), the starter screen, the
+   ruler by default, Ctrl+O and Ctrl+N, and more. It's also true when the
+   Android app says so (`COOLMessageHandler.isCODesktop()`, asked once).
+   What the Android app can't host stays off there: the presenter console
+   and swapping monitors (a second window), the welcome slideshow (not
+   packaged), task workers (file:// origin), the Options dialog (settings
+   storage). `postMobileCall()` returns the app's answer.
+7. **The desktop app's messages (Android).** `LOActivity` says it's the
+   desktop app on a PC and answers what the backstage sends, as
+   qt/Bridge.cpp does: `GETRECENTDOCS`, `opendoc`, `newdoc` (a template
+   from the web UI's templates/, copied to where the user picks),
+   `uno .uno:Open`, `uno .uno:SaveAs` (the existing copy-with-TakeOwnership
+   path), `TEXTCLIPBOARD`, `SETDARKMODE`, `FULLSCREENPRESENTATION`,
+   `LICENSE`, and drops the desktop-only rest. `DesktopDocuments` holds the
+   document actions and the recent list (the start screen's
+   `RECENT_DOCUMENTS_LIST`, now without duplicates).
+8. **The starter screen (Android).** On a PC, the launcher's start screen
+   hands over to `StarterActivity`: `cool.html?starterMode=true` in a
+   WebView with no document and no COOLWSD, answering the starter's
+   messages with `DesktopDocuments`, and reloading when a document closes.
+9. **OfficeBook only:** a broadcast receiver guarded by `DUMP` (adb's
+   shell) turns on WebView debugging (`./ob devtools on`), since the
+   setting for it hangs off the phone-style start screen.
+
 ## Branding
 
 `branding/` goes to configure as `--with-app-branding`, the build's own hook

@@ -35,8 +35,14 @@ From CONTRIBUTING.md in the monorepo:
 | 0003 `feat(android): tabbed ribbon on desktops, like the desktop app` | desktops (ChromeOS and Android PCs) ask for the notebookbar, as tablets do; phones keep classic | yes, after 0001 | not yet (build 2) | candidate; changes ChromeOS's default too, which reviewers may want to discuss |
 | 0004 `fix(android): no wallpaper-coloured caption bar in desktop windows` | transparent caption bar (API 35+) in both activities, the web UI's background under it in the document window | yes, after 0003 | not yet (build 2) | candidate |
 
+| 0005 `fix(browser): Android app on ChromeOS was never detected as a Chromebook` | `isChromebook()` asked on first use instead of before `ThisIsTheAndroidApp` is set | yes | not yet (build 3) | candidate, standalone; affects ChromeOS today |
+| 0006 `feat(browser): the Android app on a PC can be the desktop app` | `isCODesktop()` for the Android app when it opts in; Android exceptions (presenter console, welcome, task workers, Options); `postMobileCall()`; Ctrl+O/Ctrl+N for the Chromebook platform | yes, after 0005 | tsc (no new errors), eslint and prettier's check pass locally; device: not yet | candidate; the direction to agree with Collabora first |
+| 0007 `feat(android): answer the desktop app's messages on a PC` | `isCODesktop()`, `postMobileCall()`, GETRECENTDOCS/opendoc/newdoc/Open/SaveAs/TEXTCLIPBOARD/SETDARKMODE/FULLSCREENPRESENTATION/LICENSE in LOActivity, `DesktopDocuments` | yes, after 0006 | not yet | candidate |
+| 0008 `feat(android): the desktop app's starter screen on a PC` | `StarterActivity` with the web starter screen; the launcher hands over on a PC | yes, after 0007 | not yet | candidate |
+
 OfficeBook-only (not for upstream): `branding/` (name, icon), passed with
-`--with-app-branding`; Collabora ships its own branding.
+`--with-app-branding`; Collabora ships its own branding. Patch 0009 (the
+adb-only WebView debugging switch).
 
 Found, not patched yet:
 
@@ -58,6 +64,11 @@ Questions to settle before submitting:
   copied into Java; upstream may prefer reading them from the page.
 - 0002: check that the web UI relays out cleanly on a `density` change
   (moving the window to an external display).
+
+- 0006: whether Collabora wants the Android app on PCs (ChromeOS
+  included) to be "the desktop app" in the web UI at all; this is the
+  biggest behaviour change in the series. Worth asking on their forum or
+  Matrix before submitting.
 
 ## Notes for Collabora's Googlebook rollout (not code)
 
