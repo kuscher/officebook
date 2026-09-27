@@ -12,7 +12,8 @@ NDK's x86_64 toolchain. Read docs/DESIGN.md.
 ```sh
 ./ob ci | wait | fetch        # build in Actions, download and sign the APK
 ./ob install | start | stop | logs [N] | crash | shot FILE
-./ob open FILE                # a document into Download/, opened in the app
+./ob open FILE                # a document into Download/, opened in the app (all-files access on)
+./ob revoke                   # all-files access off, test files out of Download/
 ./ob share                    # the APK to the Googlebook's Download folder
 ./ob live-resize [on|off|status]
 ```
@@ -55,5 +56,6 @@ it needs their sign-off (real name and email).
 - **Kill processes by PID**, not `pkill -f`.
 - **Each shared APK bumps** VERSION_CODE in VERSION. Keep keystore.jks:
   updates must be signed with it.
-- **Clean up test files** `./ob open` puts in Download/.
+- **Clean up after testing:** `./ob revoke` (the all-files access `./ob open`
+  turns on, and the test files it puts in Download/).
 - **Ask before outward-facing steps** (releases, sharing, patches upstream).
