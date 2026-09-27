@@ -1,7 +1,7 @@
 From 1c6b789eced0b674eb4292b6f1a5a8de9d97b58d Mon Sep 17 00:00:00 2001
 From: Alexander <4418484+kuscher@users.noreply.github.com>
 Date: Sat, 26 Sep 2026 21:37:45 +0000
-Subject: [PATCH 1/2] feat(android): desktop UI on Android PCs, not only on
+Subject: [PATCH 1/4] feat(android): desktop UI on Android PCs, not only on
  ChromeOS
 
 Android's own desktop mode (a Googlebook, FEATURE_PC) is a laptop with a

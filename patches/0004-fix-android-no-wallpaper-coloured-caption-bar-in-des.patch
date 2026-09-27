@@ -1,0 +1,118 @@
+From 612868d14213f3346a5050940e2244a5a63520c3 Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:06:59 +0000
+Subject: [PATCH 4/4] fix(android): no wallpaper-coloured caption bar in
+ desktop windows
+
+In Android's desktop mode (a Googlebook, and other Android PCs) each
+window gets a caption bar drawn by the system. Unless the app asks for a
+transparent one, the system fills it with colours from the wallpaper
+(Material You), so Collabora Office windows got a pink or green bar
+above the document that matches nothing in the app. ChromeOS draws its
+own frame and is not affected.
+
+Ask for a transparent caption bar (Android 15+) with light or dark
+buttons to match. The document window paints its background in the web
+UI's --color-main-background (light and dark), which is what shows under
+the bar since the WebView sits below it, and repaints it when the theme
+changes; the start screen's toolbar already reaches up under the bar.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../androidapp/ui/LibreOfficeUIActivity.java  |  3 ++
+ .../libreoffice/androidlib/LOActivity.java    | 33 +++++++++++++++++++
+ 2 files changed, 36 insertions(+)
+
+diff --git a/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java b/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
+index ecf92029c..874804ff8 100644
+--- a/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
++++ b/android/app/src/main/java/org/libreoffice/androidapp/ui/LibreOfficeUIActivity.java
+@@ -351,6 +351,9 @@ public class LibreOfficeUIActivity extends AppCompatActivity implements Settings
+             boolean lightMode = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_YES) == 0;
+             WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView()).setAppearanceLightStatusBars(lightMode);
+             WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView()).setAppearanceLightNavigationBars(lightMode);
++            // The toolbar reaches up under the caption bar (its top padding),
++            // so a transparent caption bar takes the toolbar's colour.
++            LOActivity.useTransparentCaptionBar(this, !lightMode);
+ 
+             toolbar.setOnApplyWindowInsetsListener((v, windowInsets) -> {
+                 Insets insets = windowInsets.getInsets(WindowInsets.Type.systemBars());
+diff --git a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+index f5713193c..9e57bfe7d 100644
+--- a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
++++ b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+@@ -26,6 +26,7 @@ import android.content.res.AssetManager;
+ import android.content.res.Configuration;
+ import android.database.Cursor;
+ import android.graphics.Insets;
++import android.graphics.drawable.ColorDrawable;
+ import android.hardware.input.InputManager;
+ import android.media.MediaScannerConnection;
+ import android.net.Uri;
+@@ -48,6 +49,7 @@ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.WindowInsets;
++import android.view.WindowInsetsController;
+ import android.view.WindowManager;
+ import android.webkit.JavascriptInterface;
+ import android.webkit.MimeTypeMap;
+@@ -356,6 +358,7 @@ public class LOActivity extends AppCompatActivity {
+         sPrefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+ 
+         setContentView(R.layout.lolib_activity_main);
++        updateCaptionBar(isDarkMode());
+         mProgressDialog = new ProgressDialog(this);
+         if (BuildConfig.GOOGLE_PLAY_ENABLED)
+             this.rateAppController = new RateAppController(this);
+@@ -406,10 +409,39 @@ public class LOActivity extends AppCompatActivity {
+             return;
+ 
+         mDarkModeApplied = darkMode;
++        updateCaptionBar(darkMode);
+         callFakeWebsocketOnMessage(darkMode ? "mobile: darkthemeactivated"
+                                             : "mobile: lightthemeactivated");
+     }
+ 
++    /**
++     * In a desktop window (Android's desktop mode) the system draws the
++     * caption bar in colours taken from the wallpaper, unrelated to the app,
++     * unless the app asks for a transparent one. Ask for that, with the
++     * caption's buttons dark on a light background and light on a dark one.
++     * Does nothing without a caption bar, and before Android 15.
++     */
++    public static void useTransparentCaptionBar(Activity activity, boolean darkBackground) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM)
++            return;
++        WindowInsetsController controller = activity.getWindow().getInsetsController();
++        if (controller == null)
++            return;
++        int transparent = WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND;
++        int light = WindowInsetsController.APPEARANCE_LIGHT_CAPTION_BARS;
++        controller.setSystemBarsAppearance(transparent | (darkBackground ? 0 : light), transparent | light);
++    }
++
++    /**
++     * The WebView sits below the caption bar, so under the (transparent) bar
++     * is the window's background: make it the web UI's own background
++     * (--color-main-background), so the bar looks like part of the ribbon.
++     */
++    private void updateCaptionBar(boolean darkMode) {
++        getWindow().setBackgroundDrawable(new ColorDrawable(darkMode ? 0xFF121212 : 0xFFF8F9FA));
++        useTransparentCaptionBar(this, darkMode);
++    }
++
+     /** Initialize the app - copy the assets and create the UI. */
+     private void init() {
+         if (sPrefs.getString(ASSETS_EXTRACTED_GIT_COMMIT, "").equals(BuildConfig.GIT_COMMIT)) {
+@@ -1302,6 +1334,7 @@ public class LOActivity extends AppCompatActivity {
+             finalUrlToLoad += "&userinterfacemode=notebookbar";
+ 
+         mDarkModeApplied = isDarkMode();
++        updateCaptionBar(mDarkModeApplied);
+         if (mDarkModeApplied) {
+             finalUrlToLoad += "&darkTheme=true";
+         }
+-- 
+2.47.3
+

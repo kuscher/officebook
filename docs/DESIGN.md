@@ -32,6 +32,27 @@ three layers in one APK:
    `smallestScreenSize` and `density` in configChanges, so a desktop window
    resized across a size bucket, or moved to another display, restarted the
    activity and reloaded the document.
+3. **The tabbed ribbon on desktops.** The app asked the web UI for the
+   classic menu bar on ChromeOS (and, with patch 1, Android PCs) and for the
+   tabbed ribbon ("notebookbar") only on tablets, a choice from before the
+   desktop app, which always uses the ribbon. Desktops now get the ribbon
+   too; phones keep the classic mobile UI. View > Use Compact view switches
+   back and is remembered.
+4. **No wallpaper-coloured caption bar.** Android's desktop mode draws each
+   window's caption bar in colours from the wallpaper (the SystemUI code
+   takes only light or dark from the app) unless the app asks for a
+   transparent one. Both activities ask for it; the document window paints
+   the web UI's `--color-main-background` under it, and the start screen's
+   toolbar already reaches up under it.
+
+## Branding
+
+`branding/` goes to configure as `--with-app-branding`, the build's own hook
+for a branded app, so no patch is needed: `android/` is copied into the
+app's resources (the launcher icon `ic_launcher_brand`, an adaptive icon
+of a page in the suite's colours, and the About dialog's icon), and
+`branding.js` names the product OfficeBook in the web UI. `branding.css` and
+`images/toolbar-bg-logo.svg` only have to exist for the build.
 
 ## Building (GitHub Actions)
 

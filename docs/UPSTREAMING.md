@@ -32,6 +32,11 @@ From CONTRIBUTING.md in the monorepo:
 | --- | --- | --- | --- | --- |
 | 0001 `feat(android): desktop UI on Android PCs, not only on ChromeOS` | `LOActivity.isDesktop()` = ChromeOS or `FEATURE_PC`, used for the UI mode, the web UI's `isChromeOS()` JavaScript interface and the start screen's button | yes | 2026-09-27 on a Googlebook: a .docx opens with the classic menu bar and desktop status bar, no ribbon. Editing not yet tried | candidate |
 | 0002 `fix(android): keep documents open when a desktop window is resized` | `smallestScreenSize` and `density` in both activities' configChanges | yes | 2026-09-27: window resized 1382x864 → 731x592 → back (`am task resize`), same process, no restart, document stays open. Display change not tried | candidate |
+| 0003 `feat(android): tabbed ribbon on desktops, like the desktop app` | desktops (ChromeOS and Android PCs) ask for the notebookbar, as tablets do; phones keep classic | yes, after 0001 | not yet (build 2) | candidate; changes ChromeOS's default too, which reviewers may want to discuss |
+| 0004 `fix(android): no wallpaper-coloured caption bar in desktop windows` | transparent caption bar (API 35+) in both activities, the web UI's background under it in the document window | yes, after 0003 | not yet (build 2) | candidate |
+
+OfficeBook-only (not for upstream): `branding/` (name, icon), passed with
+`--with-app-branding`; Collabora ships its own branding.
 
 Found, not patched yet:
 
@@ -49,6 +54,8 @@ Questions to settle before submitting:
   picker handles the filter; confirm on the device.
 - 0001: the JavaScript interface keeps the name `isChromeOS()`; upstream
   may prefer renaming it (web UI and app together).
+- 0004: the colours under the caption are the web UI's palette values,
+  copied into Java; upstream may prefer reading them from the page.
 - 0002: check that the web UI relays out cleanly on a `density` change
   (moving the window to an external display).
 

@@ -24,9 +24,11 @@ a window behind a veil while you resize it. Run
 ## What's different from Collabora Office for Android
 
 - The desktop UI on Android PCs (Android's `FEATURE_PC`), which upstream
-  only gives ChromeOS.
+  only gives ChromeOS, with the tabbed ribbon like Collabora Office on the
+  desktop (View > Use Compact view for the classic menus).
 - Resizing the window or moving it to another display doesn't restart the
   document.
+- The window's caption bar matches the app instead of the wallpaper.
 - Its own name and package (`local.officebook`), so it isn't mistaken for
   Collabora's official app.
 - English only for now.

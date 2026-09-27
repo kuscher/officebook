@@ -1,0 +1,50 @@
+From 768f4a1883ef7b40b60c1625ebfa5b3a40afbaf4 Mon Sep 17 00:00:00 2001
+From: Alexander <4418484+kuscher@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 03:06:12 +0000
+Subject: [PATCH 3/4] feat(android): tabbed ribbon on desktops, like the
+ desktop app
+
+The app asks the web UI for the tabbed ribbon ("notebookbar") on tablets
+but for the classic menu bar on ChromeOS and, since isDesktop(), other
+Android PCs. That choice predates the desktop app: Collabora Office on
+Windows, macOS and Linux now always uses the tabbed ribbon, and the
+browser defaults to it, so the Android app on a laptop looked older and
+different from the same product on the desktop.
+
+Ask for the notebookbar on desktops as on tablets; only phones keep the
+classic mobile UI. The web UI's desktop mode (isDesktop()) draws it at
+desktop size, and View > Use Compact view still switches back and is
+remembered.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../main/java/org/libreoffice/androidlib/LOActivity.java    | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+index a5b7765ba..f5713193c 100644
+--- a/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
++++ b/android/lib/src/main/java/org/libreoffice/androidlib/LOActivity.java
+@@ -1271,7 +1271,9 @@ public class LOActivity extends AppCompatActivity {
+         String cacheDir = getApplication().getCacheDir().getAbsolutePath();
+         String apkFile = getApplication().getPackageResourcePath();
+         AssetManager assetManager = getResources().getAssets();
+-        String uiMode = (isLargeScreen() && !isDesktop(this)) ? "notebookbar" : "classic";
++        // Tablets and desktops get the tabbed ribbon (desktops like the desktop
++        // app, which always uses it); phones the classic mobile UI.
++        String uiMode = (isLargeScreen() || isDesktop(this)) ? "notebookbar" : "classic";
+         String userName = getPrefs().getString(USER_NAME_KEY, "Guest User");
+         createCOOLWSD(dataDir, cacheDir, apkFile, assetManager, urlToLoad, uiMode, userName);
+ 
+@@ -1296,7 +1298,7 @@ public class LOActivity extends AppCompatActivity {
+             finalUrlToLoad += "&debug=true";
+         }
+ 
+-        if (isLargeScreen() && !isDesktop(this))
++        if (isLargeScreen() || isDesktop(this))
+             finalUrlToLoad += "&userinterfacemode=notebookbar";
+ 
+         mDarkModeApplied = isDarkMode();
+-- 
+2.47.3
+

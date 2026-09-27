@@ -24,6 +24,7 @@ on:
       - VERSION
       - engine.conf
       - patches/**
+      - branding/**
       - .github/workflows/build.yml
   workflow_dispatch:
 
@@ -218,6 +219,7 @@ jobs:
             --with-lo-builddir="$W/co/engine" \
             --with-app-name=OfficeBook --with-app-package-name=local.officebook \
             --with-vendor=OfficeBook --with-info-url=https://github.com/kuscher/officebook \
+            --with-app-branding="$GITHUB_WORKSPACE/officebook/branding" \
             --with-android-package-versioncode="$COLLABORA_VERSION-$VERSION_CODE"
 
       - name: Build the app's web UI and config
