@@ -12,7 +12,8 @@
 #                             executables/OfficeBook-<version>.apk
 #   ./ob install | start | stop | logs [N] | crash
 #   ./ob open FILE            copy FILE to the Googlebook's Download folder and
-#                             open it in OfficeBook
+#                             open it in OfficeBook (turns on the app's all-files
+#                             access for testing); ./ob revoke undoes both
 #   ./ob share                executables/OfficeBook-<version>.apk to the
 #                             Googlebook's Download folder
 #   ./ob live-resize [on|off|status]
@@ -58,10 +59,10 @@ fetch() {
   gh api "repos/$REPO/actions/artifacts/$id/zip" > build/unsigned.apk
   zipalign -c 4 build/unsigned.apk >/dev/null || { zipalign -f 4 build/unsigned.apk build/aligned.apk; mv build/aligned.apk build/unsigned.apk; }
   # The key and its password stay on this machine (not in git); a copy is
-  # in ~/.config/officebook. Updates must be signed with the same key.
+  # in ~/.config/officebook. The key password is the keystore password.
   [[ -f keystore.jks && -f keystore.pass ]] || cp ~/.config/officebook/keystore.{jks,pass} . ||
     { echo "no keystore.jks/keystore.pass"; exit 1; }
-  apksigner sign --ks keystore.jks --ks-pass file:keystore.pass --key-pass file:keystore.pass \
+  apksigner sign --ks keystore.jks --ks-pass file:keystore.pass \
     --out build/OfficeBook.apk build/unsigned.apk
   apksigner verify build/OfficeBook.apk
   rm -f build/OfficeBook.apk.idsig
@@ -109,6 +110,11 @@ case ${1:-} in
   start) adb_up; "${A[@]}" shell am start --user current -n $PKG/org.libreoffice.androidapp.ui.LibreOfficeUIActivity >/dev/null ;;
   stop) adb_up; "${A[@]}" shell am force-stop --user current $PKG ;;
   open)
+    # The shell can't grant the app another user's MediaStore file, and
+    # LOActivity only opens content:// URIs (a file:// one leaves it on
+    # "Preparing…"). For testing, turn on the all-files access the app
+    # requests (MANAGE_EXTERNAL_STORAGE), so it reads the Download row itself.
+    # ./ob revoke turns it off again and deletes the test files.
     adb_up
     f=${2:?usage: ./ob open FILE}
     case $f in
@@ -121,9 +127,20 @@ case ${1:-} in
       *) mime=application/octet-stream ;;
     esac
     put_media content://media/external/downloads Download "$mime" "$f"
-    "${A[@]}" shell am start --user current -a android.intent.action.VIEW -t "$mime" \
-      -d "$MEDIA_URI" --grant-read-uri-permission --grant-write-uri-permission \
-      -n $PKG/org.libreoffice.androidlib.LOActivity >/dev/null ;;
+    user=$("${A[@]}" shell am get-current-user | tr -d '\r')
+    "${A[@]}" shell appops set --user "$user" $PKG MANAGE_EXTERNAL_STORAGE allow
+    "${A[@]}" shell am start --user "$user" -a android.intent.action.VIEW -t "$mime" \
+      -d "$MEDIA_URI" -n $PKG/org.libreoffice.androidlib.LOActivity >/dev/null ;;
+  revoke)
+    adb_up
+    user=$("${A[@]}" shell am get-current-user | tr -d '\r')
+    "${A[@]}" shell appops set --user "$user" $PKG MANAGE_EXTERNAL_STORAGE default
+    for f in test/*; do
+      name=$(basename "$f")
+      "${A[@]}" shell content delete --user "$user" --uri content://media/external/downloads \
+        --where "\"_display_name='${name//\'/\'\'}' AND relative_path='Download/'\"" >/dev/null 2>&1 || true
+    done
+    echo "all-files access back to default; test files removed from Download" ;;
   logs)
     adb_up
     pid=$("${A[@]}" shell pidof $PKG | tr -d '\r' || true)
@@ -162,5 +179,5 @@ case ${1:-} in
       rm -f "$out.full.png"
     fi
     echo "$out" ;;
-  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

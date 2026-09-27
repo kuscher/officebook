@@ -7,7 +7,8 @@ Store app shows on Android. Writer, Calc, Impress and Draw documents (ODF and
 Microsoft Office formats) open and save on the device. No server, no Linux
 VM.
 
-Status: first build in progress (see docs/TESTING.md).
+Status: builds and runs; documents open with the desktop UI (see
+docs/TESTING.md). Editing, saving and printing still to be tried.
 
 ## Install
 

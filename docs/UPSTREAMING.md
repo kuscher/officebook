@@ -30,8 +30,17 @@ From CONTRIBUTING.md in the monorepo:
 
 | Patch | What | Applies to main (2026-09-26) | Tested | Status |
 | --- | --- | --- | --- | --- |
-| 0001 `feat(android): desktop UI on Android PCs, not only on ChromeOS` | `LOActivity.isDesktop()` = ChromeOS or `FEATURE_PC`, used for the UI mode, the web UI's `isChromeOS()` JavaScript interface and the start screen's button | yes | not yet (first build running) | candidate |
-| 0002 `fix(android): keep documents open when a desktop window is resized` | `smallestScreenSize` and `density` in both activities' configChanges | yes | not yet | candidate |
+| 0001 `feat(android): desktop UI on Android PCs, not only on ChromeOS` | `LOActivity.isDesktop()` = ChromeOS or `FEATURE_PC`, used for the UI mode, the web UI's `isChromeOS()` JavaScript interface and the start screen's button | yes | 2026-09-27 on a Googlebook: a .docx opens with the classic menu bar and desktop status bar, no ribbon. Editing not yet tried | candidate |
+| 0002 `fix(android): keep documents open when a desktop window is resized` | `smallestScreenSize` and `density` in both activities' configChanges | yes | 2026-09-27: window resized 1382x864 → 731x592 → back (`am task resize`), same process, no restart, document stays open. Display change not tried | candidate |
+
+Found, not patched yet:
+
+- **`file://` VIEW intents hang.** LOActivity logs `SCHEME_FILE: getPath()`
+  and then only continues when `mTempFile` is set, which happens for
+  `content://` URIs; with a `file://` URI the "Preparing…" dialog stays up
+  forever. Either load the file directly or finish with an error. (Seen
+  from `adb shell am start -d file:///…`; apps rarely send file URIs now,
+  so it's low priority.)
 
 Questions to settle before submitting:
 
@@ -69,4 +78,5 @@ Questions to settle before submitting:
 
 ## Build problems found
 
-None yet.
+None: co-26.04-mobile at 794af00 built for arm64 as android/README.md
+describes, first try (engine 165 minutes on a 4-core GitHub runner).
